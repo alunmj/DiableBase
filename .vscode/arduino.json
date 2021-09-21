@@ -1,0 +1,8 @@
+{
+    "configuration": "softdevice=s140v6,debug=l0",
+    "board": "adafruit:nrf52:feather52840",
+    "programmer": "adafruit:nrfutil_boot",
+    "sketch": "Diable2\\Diable2.ino",
+    "port": "COM8",
+    "output": "./build"
+}
