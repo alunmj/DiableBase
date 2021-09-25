@@ -237,7 +237,7 @@ unsigned int frameOffset = 0;
 struct frame baseFrame1[] = {
     {500, {allgreen, 0, 0, 0, allred, 0, 0, 0, allblue, 0, 0, 0, allgreen, 0, 0, 0}},
     {500, {0, 0, 0, allred, 0, 0, 0, allblue, 0, 0, 0, allgreen, 0, 0, 0, allred}},
-    {500, {0, 0, allred, 0, 0, 0, allblue, 0, 0, 0, allgreen, 0, 0, 0, allred}},
+    {500, {0, 0, allred, 0, 0, 0, allblue, 0, 0, 0, allgreen, 0, 0, 0, allred, 0}},
     {500, {0, allred, 0, 0, 0, allblue, 0, 0, 0, allgreen, 0, 0, 0, allred, 0, 0}},
     {500, {allred, 0, 0, 0, allblue, 0, 0, 0, allgreen, 0, 0, 0, allred, 0, 0, 0}},
     {500, {0, 0, 0, allblue, 0, 0, 0, allgreen, 0, 0, 0, allred, 0, 0, 0, allblue}},
@@ -473,17 +473,17 @@ void TimeLights()
   if ((long)(nextFrame - themicros) > 0L)
     return;
   aveTime = (aveTime * 9.0 + (float)(themicros - nextFrame)) / 10.0;
-  if (0)
+  if (0) // Choice to output jitter time to debug
   {
     Serial.print("Average jitter is ");
     Serial.println(aveTime);
   }
-  if (0)
+  if (0) // Choice to output loop avg time to debug
   {
     Serial.print("Average loop time is ");
     Serial.println(aveLoop);
   }
-  if (currentFrame == NULL)
+  if (currentFrame == NULL) // No frame to display - black out.
   {
     strip0.clear();
     strip0.show();
@@ -493,10 +493,11 @@ void TimeLights()
   }
   long microdelay = (long)currentFrame[nextFindex].microdelay;
   expectedTotalFramesTime += microdelay;
-  if (nextFindex == 0)
+  if (nextFindex == 0) // Collect animation statistics
   {
+    // TODO: Send statistics over bluetooth?
     long totalFramesTime = themicros - totalFrameStartTime;
-    if (0 && totalFrameStartTime != ~0L)
+    if (0 && totalFrameStartTime != ~0L) // Choice to debug statistics
     {
       Serial.print("Back to frame 0 - total animation duration: ");
       Serial.println(totalFramesTime);
@@ -515,7 +516,7 @@ void TimeLights()
     expectedTotalFramesTime = 0L;
     totalFrameStartTime = themicros;
   }
-  if (microdelay < 0L)
+  if (microdelay & 0x80000000L) // 'negative' (but it's unsigned)
   {
     // Special flags.
     switch (-microdelay)
@@ -632,6 +633,7 @@ command_loop:
   {
   case NONE:
     blecmd = bleuart.read();
+    readable--; // reduce by cmd character
     if (blecmd == 0)
       return;
     // Commands from the Adafruit demo:
@@ -656,12 +658,12 @@ command_loop:
     case 'V':
     {
       char response[30]; // overkill, its really only 22 characters including the null. Today.
-      sprintf(response, "LDiaBLE v%1.2f:L%02d%02d%c\r\n", 2.00, persistentSettings.GetPin0(), persistentSettings.GetPin1(),
+      sprintf(response, "VDiaBLE v%1.2f:L%02d%02d%c\r\n", 2.00, persistentSettings.GetPin0(), persistentSettings.GetPin1(),
               persistentSettings.GetFold());
       Serial.print(response);
       sendbleu(response);
     }
-      if (readable > 1)
+      if (readable > 0)
       {
         Serial.println("Single character command V - still have readable bytes!");
       }
@@ -676,6 +678,7 @@ command_loop:
       stride = waitread();
       componentsValue = waitread();
       is400Hz = waitread();
+      readable -= 5;
       // Serial.print("\tsize: ");Serial.print(width);Serial.print("x");Serial.println(height);
       // Serial.print("\tstride: ");Serial.println(stride);
       // Serial.print("\tpixelType ");Serial.println(pixelType);
@@ -683,7 +686,7 @@ command_loop:
       sendbleuok();
       break;
     case 'C':
-      if (readable < 4)
+      if (readable < 3)
       {
         Serial.println("We don't have enough characters for C command - seems unlikely!");
       }
@@ -695,6 +698,7 @@ command_loop:
       {
         color[i] = waitread();
       }
+      readable-=3;
       // Cheat - don't need to do it with the offsets!
       for (int i = 0; i < LED_COUNT; i++)
       {
@@ -709,11 +713,12 @@ command_loop:
       sendbleuok();
       break;
     case 'B':
-      if (readable != 2)
+      if (readable != 1)
       {
         Serial.println("Brightness command with weird number of params!");
       }
       brightness = waitread();
+      readable--;
       strip0.setBrightness(brightness);
       strip1.setBrightness(brightness);
       strip0.show();
@@ -723,11 +728,13 @@ command_loop:
     case 'P':
       x = waitread();
       y = waitread();
+      readable-=2;
       // Serial.print("\tPixel: ");Serial.print(x);Serial.print(" x ");Serial.println(y);
       for (int i = 0; i < 3; i++)
       {
         color[i] = waitread();
       }
+      readable-=3;
       // Serial.print("\tColor: ");Serial.print(color[0]);Serial.print(" ");Serial.print(color[1]);Serial.print(" ");Serial.println(color[2]);
       offset_led = y * width + x;
       color_set = strip0.Color(color[0], color[1], color[2]);
@@ -776,17 +783,17 @@ command_loop:
         // Serial.println("Badness on the frame allocation!");
       }
       // Fill with data - by looping around again!
-      readable -= 3;
+      readable -= 2;
       goto command_loop;
       break;
     case 'L':
       // Two bytes - pin for LED strip 0, pin for LED strip 1
       // One byte - 'W' for unfolded LED wings, 'F' for folded on the lid.
-      if (readable < 4)
+      if (readable < 3)
       {
         Serial.println("Too few characters in L command");
       }
-      else if (readable > 4)
+      else if (readable > 3)
       {
         Serial.println("Too many characters in L command");
       }
@@ -796,6 +803,7 @@ command_loop:
       }
       p0 = waitread();
       p1 = waitread();
+      readable-=2;
       strip0.clear();
       strip0.show();
       strip0.setPin(p0);
@@ -817,6 +825,7 @@ command_loop:
         current_offsets = fold_offsets;
         break;
       }
+      readable--;
       persistentSettings.SetPin0(p0);
       persistentSettings.SetPin1(p1);
       persistentSettings.SetFold(foldState);
@@ -831,15 +840,17 @@ command_loop:
       Serial.println("Received OK?");
       if (waitread() == 'K' && waitread() == '\n' || waitread() == '\n')
       {
+        readable=0;
         return;
       }
       Serial.println("Not OK?");
+      readable=0; // Discard anyway.
       break;
     case 'T':
       // Read in the unit name. Everything up to end of line or end of transmission, whichever comes first!
       char buffer[21];
       j = 0;
-      for (int i = 0; i < readable - 1; i++)
+      for (int i = 0; i < readable; i++)
       {
         char c = waitread();
         if (c > ' ' && j < 20)
@@ -847,12 +858,17 @@ command_loop:
           buffer[j++] = c;
         }
       }
+      readable-=i;
       buffer[j] = 0;
       persistentSettings.SetName(buffer);
       persistentSettings.WriteSettings();
       break;
     default:
-      // TODO: Send "NOK"
+      // TODO: Because "NOK", maybe discard all future characters until quiet again?
+      // Maybe also send back the command, so the caller can tell what it tried to do that was wrong?
+      readable = 0; // This at least discards the current data packet.
+      sendbleu("NOK\r\n");
+      // sendbleu("NOK - %c",blecmd);
       break;
     }
     break;
@@ -864,9 +880,9 @@ command_loop:
       int frameIndex = frameOffset / frameSize;
       int innerFrameOffset = frameOffset % frameSize;
       uint8_t readbyte;
-      readable--;
       frameOffset++;
       readbyte = waitread();
+      readable--;
       if (innerFrameOffset == 0)
       {
         if (bSerDbg)
@@ -965,6 +981,7 @@ command_loop:
   //  Serial.println("Waiting for OK");
   //  ble.waitForOK();
 }
+
 int waitread()
 {
   if (bleuart.available() == 0)
@@ -984,5 +1001,5 @@ void sendbleu(const char *sendit)
 
 void sendbleuok()
 {
-  bleuart.write("OK\r\n", 4);
+  sendbleu("OK\r\n");
 }
