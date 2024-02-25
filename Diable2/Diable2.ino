@@ -1,252 +1,30 @@
 #define GYRO_CODE
-#include <bluefruit.h>
-//#include <SPI.h>
-#if not defined(_VARIANT_ARDUINO_DUE_X_) && not defined(_VARIANT_ARDUINO_ZERO_)
-//  #include <SoftwareSerial.h>
-#endif
+//#define WAIT_FOR_SERIAL
+//#define NO_NEO
+// New pattern ideas:
+// Chasing circles - a number of circles, going in and out - linearly, sinusoidally? - each a different colour light, different speeds
+// Random squares - rectangles at random sizes and positions.
+// Cubes - just like squares, but wireframe.
+// Plaid / Argyle
+
+#include <SPI.h>
 
 #include <Adafruit_NeoPixel.h>
 
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 using namespace Adafruit_LittleFS_Namespace;
+
+#include <bluefruit.h>
+
 #ifdef GYRO_CODE
 #include <Adafruit_LSM6DS33.h>
 
 Adafruit_LSM6DS33 lsm6ds33;
-#endif
+#endif // GYRO_CODE
 
-class PersistSetting
-{
-  File settingsFile;
-  char const *_fname = "diableset.txt";
-
-  char _unitName[16];
-  char _fold;
-  int _pin0;
-  int _pin1;
-  bool _dirty;
-  byte _width;
-  byte _height;
-  byte _componentsValue;
-  byte _stride;
-  byte _is400Hz;
-
-  void defaults()
-  {
-    strcpy(_unitName, "DiaBLEINI");
-    _fold = 'F'; // Folded
-    _pin0 = 5;
-    _pin1 = 6;
-    _width = 8;  // LED_COUNT hard-set!
-    _height = 2; // Don't think we'll have other than 2 lights.
-    _componentsValue = 0;
-    _stride = 1;
-    _is400Hz = 0;
-  }
-
-  int readInt(const char *buffer, int &jmdex, int readlen, bool skippost = true)
-  {
-    int rv = atoi(&buffer[jmdex]);
-    // Skip numeric characters
-    for (; jmdex < readlen && isDigit(buffer[jmdex]); jmdex++)
-      ;
-    // Skip any non-numeric value - don't care!
-    if (skippost)
-    {
-      for (; jmdex < readlen && !isDigit(buffer[jmdex]); jmdex++)
-        ;
-    }
-    return rv;
-  }
-
-public:
-  PersistSetting() : settingsFile(InternalFS) { defaults(); }
-  bool LoadFile()
-  {
-    int p0, p1;
-    byte lheight, lwidth, lstride, lcomponentsValue, lis400Hz;
-    char foldState;
-    defaults();
-    _dirty = false;
-    Serial.println("Opening settings file");
-
-    if (settingsFile.open(_fname, FILE_O_READ))
-    {
-      char buffer[128] = {0};
-      uint32_t readlen;
-      readlen = settingsFile.read(buffer, sizeof(buffer) - 1);
-      buffer[readlen] = 0;
-      settingsFile.close();
-      Serial.println("Contents:");
-      Serial.println(readlen, 10);
-      Serial.println(buffer);
-      // Read in the settings from the config file.
-      // Read by lines, maybe, parse the following:
-      // L0,1W - LED pins 0 & 1, and W=Wings, F=Folded
-      // TName - The name of the unit.
-      // Other options will be added over time.
-      int index = 0, jmdex = 0;
-      char c;
-      while (index < readlen && buffer[index] != 0)
-      {
-        switch (buffer[index++])
-        {
-        case '\r':
-        case '\n':
-          break;
-        case 'S':
-          jmdex = index;
-          lwidth = readInt(buffer, jmdex, readlen);
-          lheight = readInt(buffer, jmdex, readlen);
-          lstride = readInt(buffer, jmdex, readlen);
-          lcomponentsValue = readInt(buffer, jmdex, readlen);
-          // is400Hz = 0;
-          lis400Hz = readInt(buffer, jmdex, readlen, false);
-          SetSize(lwidth, lheight, lstride, lcomponentsValue, lis400Hz);
-          index = jmdex;
-          Serial.println("Read in the 'S' parts");
-          break;
-        case 'q':
-          while (buffer[index] != '\n')
-            index++;
-          Serial.println("Skipped the 'S' parts");
-          break;
-        case 'L':
-          jmdex = index;
-          // TODO: AMJ: this isn't robust against malformed lines.
-          // Next numeric value is pin 0.
-          p0 = readInt(buffer, jmdex, readlen);
-          // Next numeric value is pin 1.
-          p1 = readInt(buffer, jmdex, readlen, false);
-          // Next character is fold status - W for wings, F for folded
-          foldState = buffer[jmdex];
-          if (p0 != 0)
-            SetPin0(p0);
-          if (p1 != 0)
-            SetPin1(p1);
-          if (foldState == 'W' || foldState == 'F')
-            SetFold(foldState);
-          index = jmdex;
-          Serial.println("Read in the 'L' parts");
-          break;
-        case 'T':
-          // Everything up to \r, \n, \0 or end of file is Unit Name.
-          for (jmdex = index; jmdex < readlen && buffer[jmdex] > ' '; jmdex++)
-          {
-            // Do nothing.
-          }
-          c = buffer[jmdex];
-          buffer[jmdex] = 0;
-          SetName(&buffer[index]);
-          buffer[jmdex] = c; // Put back the line-break, if there was one...
-          index = jmdex;
-          Serial.println("Read in the 'T' parts");
-          break;
-        default:
-          break;
-        }
-      }
-      _dirty = false;
-      return true;
-    }
-    return false;
-  }
-
-  ~PersistSetting()
-  {
-    WriteSettings();
-  }
-
-  bool WriteSettings()
-  {
-    if (!_dirty)
-      return true; // Don't write if we've written recently.
-    if (settingsFile.open(_fname, FILE_O_WRITE))
-    {
-      settingsFile.seek(0);
-
-      // Unit name - what it'll be called when we connect to it.
-      settingsFile.write("T");
-      settingsFile.write(_unitName);
-      settingsFile.write("\n");
-      // Fold state and pin numbers
-      char buffer[15];
-      settingsFile.write("L");
-      settingsFile.write(itoa(_pin0, buffer, 10));
-      settingsFile.write(",");
-      settingsFile.write(itoa(_pin1, buffer, 10));
-      settingsFile.write(&_fold, 1);
-      settingsFile.write("\n");
-
-      // Size
-      settingsFile.write("S");
-      settingsFile.write(itoa(_width, buffer, 10));
-      settingsFile.write(",");
-      settingsFile.write(itoa(_height, buffer, 10));
-      settingsFile.write(",");
-      settingsFile.write(itoa(_stride, buffer, 10));
-      settingsFile.write(",");
-      settingsFile.write(itoa(_componentsValue, buffer, 10));
-      settingsFile.write(",");
-      settingsFile.write(_is400Hz ? "1" : "0");
-      settingsFile.write("\n");
-
-      settingsFile.truncate(settingsFile.position());
-
-      settingsFile.flush();
-
-      settingsFile.close();
-      Serial.println("Finished writing - let's load it back and check!");
-      LoadFile();
-      _dirty = false;
-      return true;
-    }
-    return false;
-  }
-
-  char const *GetName() { return _unitName; }
-  bool SetName(const char *newName)
-  {
-    _dirty = true;
-    strncpy(_unitName, newName, sizeof _unitName - 1);
-    return true;
-  }
-  int GetPin0() { return _pin0; }
-  bool SetPin0(int pin0)
-  {
-    _dirty = true;
-    _pin0 = pin0;
-    return true;
-  }
-  int GetPin1() { return _pin1; }
-  bool SetPin1(int pin1)
-  {
-    _dirty = true;
-    _pin1 = pin1;
-    return true;
-  }
-  char GetFold() { return _fold; }
-  bool SetFold(char fold)
-  {
-    _dirty = true;
-    _fold = fold;
-    return true;
-  }
-  bool SetSize(byte iwidth, byte iheight, byte istride, byte icomponentsValue, byte iis400Hz)
-  {
-    _dirty = true;
-    _width = iwidth;
-    _height = iheight;
-    _stride = istride;
-    _componentsValue = icomponentsValue;
-    _is400Hz = iis400Hz;
-    return true;
-  }
-
-  int GetWidth() { return (int)_width; }
-
-} persistentSettings; // Singleton
+#include "dbleSettings.h"
+PersistSetting persistentSettings; // Singleton
 
 // We're coded up right now for the BlueFruit nRF52840 Feather Express
 // Important pin values from https://learn.adafruit.com/introducing-the-adafruit-nrf52840-feather/pinouts:
@@ -275,27 +53,37 @@ Adafruit_NeoPixel strip0(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel strip1(LED_COUNT, LED_PIN2, NEO_GRB + NEO_KHZ800);
 
 // I don't really use this neo-pixel on the board.
+#ifndef NO_NEO
 Adafruit_NeoPixel neo(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+#endif // NO_NEO
 
-uint8_t fold_offsets8[] = {3, 0xb, 0xc, 4, 2, 0xa, 0xd, 5, 1, 9, 0xe, 6, 0, 8, 0xf, 7}; // Carefully calculated!
-// When the two 8-LED strips are doubly interleaved, with strip 0 offset by 1/8th the LED width, and strip 1 offset by 3/8th.
-// This is the order in which you should light up the lights. Strip 0 is numbered 0-7, Strip 1 is numbered 8-0xf.
-uint8_t wing_offsets8[] = {0, 8, 1, 9, 2, 0xa, 3, 0xb, 4, 0xc, 5, 0xd, 6, 0xe, 7, 0xf}; // Easily calculated!
+int buttonState = HIGH;
+int lastButtonState = HIGH;
+ulong lastDebounceTime = 0L;
+ulong debounceDelay = 50L; // Milliseconds of 'settling' allowed before a button press is allowed.
 
 uint8_t wing_offsetsN(int index, int numPixels)
 {
   uint8_t retval;
-  retval = (index / 2) + (numPixels * (index % 2));
-  if (numPixels == 8)
-  {
-    if (retval != wing_offsets8[index])
-      Serial.println("Failure in wing_offsetsN!");
-  }
+  retval = (index / 2) + (numPixels * (index & 1));
   return retval;
 };
 
+uint8_t one_offsetsN(int index, int numPixels)
+{
+  // Start in the center - numpixels/2 (+1 because we start with pixel #8)
+  uint8_t retval;
+  int offset = numPixels / 2 - 1 - index / 2;
+  if (index & 1)
+    offset = numPixels - 1 - offset;
+  retval = offset;
+  //  Serial.printf("Inputs: %d, %d => one_offsetsN returns %d\n",index,numPixels,retval);
+  return retval;
+}
+
 uint8_t fold_offsetsN(int index, int numPixels)
 {
+  // DEPRECATION WARNING: This worked two years ago, but I don't like the look of the fold.
   // This diagram shows why we aren't working properly with the way we send pictures in.
   // So I'm not too concerned about this being correct.
   // fold_offsets8[] = {3, 0xb, 0xc, 4, 2, 0xa, 0xd, 5, 1, 9, 0xe, 6, 0, 8, 0xf, 7};
@@ -317,19 +105,6 @@ uint8_t fold_offsetsN(int index, int numPixels)
     retval += count;
     break;
   }
-  if (numPixels == 8)
-  {
-    if (retval != fold_offsets8[index])
-    {
-      Serial.println("Failure in fold_offsetsN!");
-      Serial.print("Index is ");
-      Serial.print(index);
-      Serial.print(" - ");
-      Serial.print(retval);
-      Serial.print(" should be ");
-      Serial.println(fold_offsets8[index]);
-    }
-  }
   return retval;
 }
 
@@ -337,7 +112,8 @@ enum commandStates
 {
   NONE_COMMAND,
   FRAME_COMMAND
-} command_state_now = NONE_COMMAND; // Commands that might need extra bytes beyond what's read in a single message.
+};
+enum commandStates command_state_now = NONE_COMMAND; // Commands that might need extra bytes beyond what's read in a single message.
 
 enum displayStates
 {
@@ -346,16 +122,18 @@ enum displayStates
   CYCLE_DISPLAY,
   SPARKLE_DISPLAY,
   GYRO_DISPLAY,
-} display_state_now = NONE_DISPLAY;
+};
+enum displayStates display_state_now = NONE_DISPLAY;
 
 enum foldedStates
 {
   FOLDED_SHUT,
-  FOLDED_OPEN
-} folded_state_now = FOLDED_SHUT;
+  FOLDED_OPEN,
+  FOLDED_SINGLE
+};
+enum foldedStates folded_state_now = FOLDED_SHUT;
 
 // When the two 8-LED strips are singly interleaved, with strip 0 offset by 1 width, and strip 1 by 1.5 width.
-uint8_t *current_offsets = fold_offsets8;
 uint8_t current_offsets_fun(int i, int numPixels)
 {
   switch (folded_state_now)
@@ -364,6 +142,8 @@ uint8_t current_offsets_fun(int i, int numPixels)
     return fold_offsetsN(i, numPixels);
   case FOLDED_OPEN:
     return wing_offsetsN(i, numPixels);
+  case FOLDED_SINGLE:
+    return one_offsetsN(i, numPixels);
   }
   return 0;
 }
@@ -424,12 +204,74 @@ long minFramesTime, maxFramesTime;
 
 long totalFrameStartTime, expectedTotalFramesTime = 0;
 
+// These things should go into a "strips" class.
+int width = 8, height = 2, stride = 1, componentsValue = 0, is400Hz = 0;
+
+void ClearStrips()
+{
+  strip0.clear();
+  if (height > 1)
+    strip1.clear();
+}
+
+void FillStrips(uint32_t nColor)
+{
+  strip0.fill(nColor, 0, strip0.numPixels());
+  if (height > 1)
+    strip1.fill(nColor, 0, strip1.numPixels());
+}
+
+void HalfFillStrips(uint32_t nColor1, uint32_t nColor2)
+{
+  strip0.fill(nColor1);
+  if (height > 1)
+    strip1.fill(nColor2);
+  else
+    strip0.fill(nColor2, width / 2, width / 2);
+}
+
+void SetStripsBrightness(uint8_t brightness)
+{
+  strip0.setBrightness(brightness);
+  if (height > 1)
+    strip1.setBrightness(brightness);
+}
+
+void ShowStrips()
+{
+  strip0.show();
+  if (height > 1)
+    strip1.show();
+}
+
+void SetStripsLength(int length)
+{
+  strip0.updateLength(length);
+  if (height > 1)
+    strip1.updateLength(length);
+}
+
+void SetStripsPin(int pin0, int pin1)
+{
+  strip0.setPin(pin0);
+  strip0.begin();
+  strip0.clear();
+  strip0.show();
+  if (height > 1)
+  {
+    strip1.setPin(pin1);
+    strip1.begin();
+    strip1.clear();
+    strip1.show();
+  }
+}
+
 void setOffsetPixel(int i, uint32_t colorToSet)
 {
   uint8_t offset_led;
-  offset_led = current_offsets_fun(i, strip0.numPixels());
-  uint16_t inset_led = offset_led % strip0.numPixels();
-  uint8_t strip_num = offset_led / strip0.numPixels();
+  offset_led = current_offsets_fun(i, width);
+  uint16_t inset_led = offset_led % width;
+  uint8_t strip_num = offset_led / width;
   switch (strip_num)
   {
   case 0:
@@ -456,14 +298,13 @@ public:
     step = _step;
     hue1 = 0;
     starttime = micros();
-    Serial.println("Start time = " + String(starttime, HEX));
+    Serial.printf("Start time = %lx\n", starttime);
     display_state_now = CYCLE_DISPLAY;
     tick();
   }
 
   static void tick()
   {
-    // TODO: Find out why this locks out at thirty-five minutes.
     // Note: 35 minutes is 0x80 00 00 00 / 1,000,000 - so, clocking from signed to unsinged in micros()).
     unsigned long tnow = micros() - starttime;
     nextFrame = micros() + 500UL;      // Prevents TimeLights() from deciding we don't need to be run!
@@ -474,15 +315,14 @@ public:
       brightness = 100; // If we're at the end of a cable, we need less brights.
 
     hue1 = newhue1;
-    for (int i = 0; i < strip0.numPixels() + strip1.numPixels(); i++)
+    for (int i = 0; i < width * height; i++)
     {
       uint16_t hue = (uint16_t)(hue1 + i * step);
       uint32_t col = Adafruit_NeoPixel::ColorHSV(hue, 255, brightness);
       uint32_t gam = Adafruit_NeoPixel::gamma32(col);
       setOffsetPixel(i, gam);
     }
-    strip0.show();
-    strip1.show();
+    ShowStrips();
   }
 };
 int cycle::hue1 = 0;
@@ -507,22 +347,13 @@ public:
   static void tick()
   {
     nextFrame = micros() + 500UL; // Prevents TimeLights() from deciding we don't need to be run!
-    strip0.fill(background);
-    strip1.fill(background);
+    FillStrips(background);
     if (random(255) <= chance)
     {
-      int pick = random(strip0.numPixels() + strip1.numPixels());
-      if (pick < strip0.numPixels())
-      {
-        strip0.setPixelColor(pick, foreground);
-      }
-      else
-      {
-        strip1.setPixelColor(pick - strip0.numPixels(), foreground);
-      }
+      int pick = random(width * height);
+      setOffsetPixel(pick, foreground);
     }
-    strip0.show();
-    strip1.show();
+    ShowStrips();
   }
 };
 uint32_t sparkle::background;
@@ -530,18 +361,77 @@ uint32_t sparkle::foreground;
 int sparkle::chance;
 
 #ifdef GYRO_CODE
+class rolling_average
+{
+  // Implemented using a ring of floats
+  float *avestore = nullptr;
+  int size = 0, offset = 0, count = 0;
+  float total = 0.0;
+  float local_min = 1000000.0, local_max = -1000000.0;
+
+public:
+  rolling_average(int _size = 100)
+  {
+    if (avestore)
+    {
+      delete[] avestore;
+    }
+    size = _size;
+    avestore = new float[size];
+    offset = 0;
+    count = 0;
+    total = 0.0;
+  }
+  void add(float _value)
+  {
+    if (count != size)
+    {
+      avestore[offset++] = _value;
+      count++;
+    }
+    else
+    {
+      total -= avestore[offset];
+      avestore[offset++] = _value;
+    }
+    if (offset >= size)
+    {
+      offset = 0;
+    }
+    total += _value;
+  }
+  float average()
+  {
+    if (count == 0)
+    {
+      return 0.0; // Let's not be dividing by zero any time soon.
+    }
+    return total / (float)count;
+  }
+  ~rolling_average()
+  {
+    if (avestore)
+    {
+      delete[] avestore;
+    }
+  }
+};
+
 struct my_gyro_range
 {
   gyro_range range;
   uint32_t color;
   float top;
 } const ranges[] = {
-    {LSM6DS_GYRO_RANGE_125_DPS, Adafruit_NeoPixel::Color(255, 0, 0), 125.0},
-    {LSM6DS_GYRO_RANGE_250_DPS, Adafruit_NeoPixel::Color(255, 255, 0), 250.0},
-    {LSM6DS_GYRO_RANGE_500_DPS, Adafruit_NeoPixel::Color(0, 255, 0), 500.0},
-    {LSM6DS_GYRO_RANGE_1000_DPS, Adafruit_NeoPixel::Color(0, 255, 255), 1000.0},
-    {LSM6DS_GYRO_RANGE_2000_DPS, Adafruit_NeoPixel::Color(0, 0, 255), 2000.0},
-    {ISM330DHCX_GYRO_RANGE_4000_DPS, Adafruit_NeoPixel::Color(255, 0, 255), 4000.0}};
+    // Top values are more / less in rad/s, but I really don't know how to trust those numbers.
+    {LSM6DS_GYRO_RANGE_125_DPS, Adafruit_NeoPixel::Color(255, 0, 0), 2.50},    // red
+    {LSM6DS_GYRO_RANGE_250_DPS, Adafruit_NeoPixel::Color(255, 255, 0), 5.0},   // yellow
+    {LSM6DS_GYRO_RANGE_500_DPS, Adafruit_NeoPixel::Color(0, 255, 0), 10.0},    // green
+    {LSM6DS_GYRO_RANGE_1000_DPS, Adafruit_NeoPixel::Color(0, 255, 255), 20.0}, // cyan
+    {LSM6DS_GYRO_RANGE_2000_DPS, Adafruit_NeoPixel::Color(0, 0, 255), 40.0},   // blue
+    //    {ISM330DHCX_GYRO_RANGE_4000_DPS, Adafruit_NeoPixel::Color(255, 0, 255), 80.0}, // magenta
+};
+const int gyro_range_count = sizeof ranges / sizeof *ranges;
 
 class gyroColor
 {
@@ -569,12 +459,14 @@ class gyroColor
 public:
   // Static variables, because we only have a singleton.
   static float range_top, range_value, range_percent;
+  static float accel_y;
   static int current_range_index;
+  static rolling_average average_x, average_y;
   // Static functions
   static void start()
   {
     getRange();
-    //    Serial.println(String("Gyro Start time = ") + String(micros(), HEX));
+    //    Serial.printf(String("Gyro Start time = %lx\n",micros());
     display_state_now = GYRO_DISPLAY;
     tick();
   }
@@ -583,17 +475,16 @@ public:
     gyro_range current_range = lsm6ds33.getGyroRange();
     current_range_index = 0;
     int i = 0;
-    for (i = 0; i < sizeof ranges / sizeof *ranges; i++)
+    for (i = 0; i < gyro_range_count; i++)
     {
       if (ranges[i].range == current_range)
       {
         current_range_index = i;
       }
     }
-    //    Serial.println(String("range = ") + String((int)current_range) + String(" maps to index ") + String(current_range_index) + String(" of ") + String(i));
+    Serial.printf("range = %d maps to index %d of %d\n", (int)current_range, current_range_index, i);
 
-    // Convert from degrees per second to radians per second
-    range_top = ranges[current_range_index].top / 57.2957795; // 180/pi
+    range_top = ranges[current_range_index].top;
   }
   static void getReading()
   {
@@ -607,66 +498,89 @@ public:
     // Z rotation is in gyro.gyro.z as a float in rads / s
     // I don't care, positive or negative, for this. Maybe if you can reverse a diabolo?
 
-    range_value = abs(gyro.gyro.z);
+    range_value = gyro.gyro.z > 0.0 ? gyro.gyro.z : -gyro.gyro.z;
 
     range_percent = (range_value)*100.0 / (range_top);
 
-    if (range_percent < 25.0 && current_range_index != 0)
+    /*if (range_percent < 25.0 && current_range_index != 0)
     {
       // range_down
       lsm6ds33.setGyroRange(ranges[current_range_index - 1].range);
+      Serial.printf("Range down! -> %d\n", current_range_index - 1);
     }
-    else if (range_percent > 75.0 && current_range_index != 5)
+    else if (range_percent > 75.0 && current_range_index != gyro_range_count - 1)
     {
       // range_up
       lsm6ds33.setGyroRange(ranges[current_range_index + 1].range);
+      Serial.printf("Range up! -> %d\n", current_range_index + 1);
     }
-    //    Serial.println(String("Gyro reading received: z=")+String(range_value)+String(" - %=") + String(range_percent));
+    */
+    // TODO: Instead of using average y over the last 100 samples, why not count local minimum and maximum of x and y?
+    Serial.printf("Gyro reading received: z=%f - %%=%f\n", range_value, range_percent);
+    accel_y = accel.acceleration.x;
+    average_y.add(accel.acceleration.y);
+    average_x.add(accel.acceleration.x);
+    Serial.printf("Accel reading received: y=%f; x=%f\n", accel.acceleration.y, accel.acceleration.x);
   }
   static void tick()
   {
-    nextFrame = micros() + 500UL;
+    nextFrame = micros() + 20000UL;
     getReading();
-    int pixelCount = 0;
-    int pixelMax = strip0.numPixels() + strip1.numPixels();
-    switch (current_range_index)
+    if (accel_y > average_x.average())
     {
-    case 0:
-      pixelCount = pixelMax * (range_percent) / 75.0;
-      break;
-    case 6:
-      pixelCount = pixelMax * (range_percent - 25.0) / 75.0;
-      if (range_percent > 98.0)
-      {
-        pixelCount = pixelMax;
-      }
-
-      break;
-    default:
-      pixelCount = pixelMax * (range_percent - 25.0) / 50.0;
-      break;
+      HalfFillStrips(Adafruit_NeoPixel::Color(0, 255, 0), Adafruit_NeoPixel::Color(255, 0, 0));
     }
-    uint32_t pixelColor = ranges[current_range_index].color;
-    //    Serial.println(String("Lighting up pixels: ") + String(pixelCount));
-    //    Serial.println(String("Pixel color is ") + String(pixelColor));
-    // light up pixelCount pixels at range_color
-    for (int i = 0; i < strip0.numPixels() + strip1.numPixels(); i++)
+    else
     {
-      if (i < pixelCount)
+      HalfFillStrips(Adafruit_NeoPixel::Color(255, 0, 0), Adafruit_NeoPixel::Color(0, 255, 0));
+    }
+    if (0)
+    {
+      float pixelCount = 0;
+      float pixelMax = width * height;
+      uint32_t pixelColor = ranges[current_range_index].color;
+      if (current_range_index == 0)
       {
-        setOffsetPixel(i, pixelColor);
+        pixelCount = pixelMax * (range_percent) / 75.0;
+      }
+      else if (current_range_index == gyro_range_count - 1)
+      {
+        pixelCount = pixelMax * (range_percent - 25.0) / 75.0;
+        if (range_percent > 98.0)
+        {
+          pixelCount = pixelMax;
+          pixelColor = Adafruit_NeoPixel::Color(0xff, 0xff, 0xff); // White for 'pegged over full'.
+        }
       }
       else
       {
-        setOffsetPixel(i, 0);
+        pixelCount = pixelMax * (range_percent - 25.0) / 50.0;
+      }
+      int ipixelCount = (int)pixelCount;
+      int ipixelMax = (int)pixelMax;
+      //    Serial.printf("Lighting up pixels: %d\n", ipixelCount);
+      //    Serial.printf("Pixel color is %d\n", (int)pixelColor);
+      // light up pixelCount pixels at range_color
+      for (int i = 0; i < ipixelMax; i++)
+      {
+        if (i < ipixelCount)
+        {
+          setOffsetPixel(i, pixelColor);
+        }
+        else
+        {
+          setOffsetPixel(i, 0);
+        }
       }
     }
-    strip0.show();
-    strip1.show();
+    ShowStrips();
+    sendbleu((String(">") + String(accel_y) + String(",") + String(range_value) + String(",") + String(average_y.average())).c_str());
   }
 };
-float gyroColor::range_top, gyroColor::range_value, gyroColor::range_percent;
+float gyroColor::range_top, gyroColor::range_value, gyroColor::range_percent, gyroColor::accel_y;
 int gyroColor::current_range_index;
+rolling_average gyroColor::average_x(1000);
+rolling_average gyroColor::average_y(1000);
 #endif // GYRO_CODE
 
 void defaultFrames()
@@ -703,8 +617,12 @@ BLEUart bleuart;
 
 void neoshow(uint32_t inColor)
 {
+  #ifndef NO_NEO
+  static bool began_neo = false;
+  if (!began_neo) { neo.begin(); began_neo = true; }
   neo.setPixelColor(0, inColor);
   neo.show();
+  #endif // NO_NEO
 }
 
 void error(const char *ts)
@@ -719,54 +637,60 @@ void error(const char *ts)
   } // Eternal loop!
 }
 
-int width = 8, height = 2, stride = 1, componentsValue = 0, is400Hz = 0;
-
 void setup()
 {
-  neo.begin();
-  neo.setPixelColor(0, 0, 0, 255); // blue!
-  neo.setPixelColor(0, 0, 0, 0);   // black.
-  neo.show();
-  Serial.begin(115200);
+  //  put your setup code here, to run once:
   InternalFS.begin();
-  defaultFrames();
-  //while (!Serial)
-  //   delay(10); // Wait for serial?
-  // put your setup code here, to run once:
-  if (Serial)
-  {
-    Serial.println("Diable2");
-    Serial.println("=======");
+  
+  lastDebounceTime = millis();
+  if (PIN_BUTTON1 < (PINS_COUNT)) {
+    pinMode(PIN_BUTTON1, INPUT_PULLUP); // Prepare user switch for input.
   }
+  neoshow(Adafruit_NeoPixel::Color(0,0,255)); // blue!
+
+  Serial.begin(115200);
+  #ifdef WAIT_FOR_SERIAL
+  while (!Serial) {
+    delay(10); // Wait for serial?
+  }
+  #endif // WAIT_FOR_SERIAL
+  neoshow(Adafruit_NeoPixel::Color(0,0,0)); // black.
+
+  // InternalFS.format(); // Uncomment to wipe the config.
+  defaultFrames();
+  Serial.println("Diable2");
+  Serial.println("=======");
+
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
 
   Bluefruit.begin();
   Bluefruit.setTxPower(4);
-  persistentSettings.LoadFile();
-  width = persistentSettings.GetWidth();
-  strip0.clear();
-  strip1.clear();
-  strip0.show();
-  strip1.show();
-  strip0.updateLength(width);
-  strip1.updateLength(width);
-  strip0.clear();
-  strip1.clear();
-  strip0.show();
-  strip1.show();
+
+  if (persistentSettings.LoadFile()) {
+    width = persistentSettings.GetWidth();
+    height = persistentSettings.GetHeight();
+  }
+
+  ClearStrips();
+  ShowStrips();
+  SetStripsLength(width);
+  ClearStrips();
+  ShowStrips();
 
   char const *ident = persistentSettings.GetName();
   switch (persistentSettings.GetFold())
   {
   case 'F':
-    current_offsets = fold_offsets8;
     folded_state_now = FOLDED_SHUT;
     break;
   case 'W':
-    current_offsets = wing_offsets8;
     folded_state_now = FOLDED_OPEN;
     break;
+  case 'S':
+    folded_state_now = FOLDED_SINGLE;
+    break;
   }
+
   Bluefruit.setName(ident);
 
   // Little blue light off.
@@ -787,14 +711,7 @@ void setup()
   // Set up and start advertising
   startAdv();
 
-  strip0.setPin(persistentSettings.GetPin0());
-  strip0.begin();
-  strip0.clear();
-  strip0.show();
-  strip1.setPin(persistentSettings.GetPin1());
-  strip1.begin();
-  strip1.clear();
-  strip1.show();
+  SetStripsPin(persistentSettings.GetPin0(), persistentSettings.GetPin1());
 
   Serial.println("Time to connect and send!");
 #ifdef GYRO_CODE
@@ -803,73 +720,18 @@ void setup()
     // if (!lsm6ds33.begin_SPI(LSM_CS)) {
     // if (!lsm6ds33.begin_SPI(LSM_CS, LSM_SCK, LSM_MISO, LSM_MOSI)) {
     Serial.println("Failed to find LSM6DS33 chip");
-    while (1)
-    {
-      delay(10);
-    }
+    /*    while (1)
+        {
+          delay(10);
+        }*/
   }
-
-  Serial.println("LSM6DS33 Found!");
-
-  // lsm6ds33.setGyroRange(LSM6DS_GYRO_RANGE_250_DPS);
-  Serial.print("Gyro range set to: ");
-  switch (lsm6ds33.getGyroRange())
+  else
   {
-  case LSM6DS_GYRO_RANGE_125_DPS:
-    Serial.println("125 degrees/s");
-    break;
-  case LSM6DS_GYRO_RANGE_250_DPS:
-    Serial.println("250 degrees/s");
-    break;
-  case LSM6DS_GYRO_RANGE_500_DPS:
-    Serial.println("500 degrees/s");
-    break;
-  case LSM6DS_GYRO_RANGE_1000_DPS:
-    Serial.println("1000 degrees/s");
-    break;
-  case LSM6DS_GYRO_RANGE_2000_DPS:
-    Serial.println("2000 degrees/s");
-    break;
-  case ISM330DHCX_GYRO_RANGE_4000_DPS:
-    break; // unsupported range for the DS33
-  }
-  // lsm6ds33.setGyroDataRate(LSM6DS_RATE_12_5_HZ);
-  Serial.print("Gyro data rate set to: ");
-  switch (lsm6ds33.getGyroDataRate())
-  {
-  case LSM6DS_RATE_SHUTDOWN:
-    Serial.println("0 Hz");
-    break;
-  case LSM6DS_RATE_12_5_HZ:
-    Serial.println("12.5 Hz");
-    break;
-  case LSM6DS_RATE_26_HZ:
-    Serial.println("26 Hz");
-    break;
-  case LSM6DS_RATE_52_HZ:
-    Serial.println("52 Hz");
-    break;
-  case LSM6DS_RATE_104_HZ:
-    Serial.println("104 Hz");
-    break;
-  case LSM6DS_RATE_208_HZ:
-    Serial.println("208 Hz");
-    break;
-  case LSM6DS_RATE_416_HZ:
-    Serial.println("416 Hz");
-    break;
-  case LSM6DS_RATE_833_HZ:
-    Serial.println("833 Hz");
-    break;
-  case LSM6DS_RATE_1_66K_HZ:
-    Serial.println("1.66 KHz");
-    break;
-  case LSM6DS_RATE_3_33K_HZ:
-    Serial.println("3.33 KHz");
-    break;
-  case LSM6DS_RATE_6_66K_HZ:
-    Serial.println("6.66 KHz");
-    break;
+    lsm6ds33.setAccelRange(LSM6DS_ACCEL_RANGE_16_G);
+    lsm6ds33.setAccelDataRate(LSM6DS_RATE_6_66K_HZ);
+
+    lsm6ds33.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS);
+    lsm6ds33.setGyroDataRate(LSM6DS_RATE_3_33K_HZ);
   }
 #endif // GYRO_CODE
 
@@ -892,7 +754,7 @@ void setup()
 void rxCallback(uint16_t conn_hdl)
 {
   int readable = bleuart.available();
-  Serial.println("Bytes read in from BLE: " + String(readable));
+  Serial.printf("Bytes read in from BLE: %d\n", readable);
   // We could potentially read more from the FIFO, with bool peek(void *buffer)
   asyncReadAndProcess(readable);
 }
@@ -934,13 +796,15 @@ void startAdv(void)
 
 void connectCallback(uint16_t conn_handle)
 {
+  Serial.printf("New Bluetooth connection - handle is %d\n", (int)conn_handle);
+
+  neoshow(0);
   BLEConnection *connection = Bluefruit.Connection(conn_handle);
   char central_name[32] = {0};
-  connection->getPeerName(central_name, sizeof(central_name));
-  Serial.print("Connected to ");
-  Serial.println(central_name);
+  connection->getPeerName(central_name, sizeof(central_name)-1);
+  Serial.printf("Connected to %s\n", central_name);
 
-  // request PHY changed to 2MB
+  // request PHY changed to 2MB - default is BLE_GAP_PHY_AUTO
   Serial.println("Request to change PHY");
   connection->requestPHY();
 
@@ -962,9 +826,9 @@ void disconnectCallback(uint16_t conn_handle, uint8_t reason)
 {
   // Don't be tempted to reset the current_offset, because it should be a hardware setting.
   // Serial.println();
-  Serial.print("Disconnected, reason = 0x");
-  Serial.println(reason, HEX);
-  displayStartup();
+  Serial.printf("Disconnected, reason = 0x%x\n", (int)reason);
+  Serial.printf("Closing Bluetooth connection - handle is %d\n", (int)conn_handle);
+  displayShutup();
   bleuart.flush();
 }
 
@@ -983,6 +847,7 @@ void TimeLights()
   aveLoop = (aveLoop * 9.0 + (float(looptime))) / 10.0;
 
   // If we aren't ready for the next frame, quit.
+  // If you don't set "nextFrame", you will cycle past it and block until coming back around.
   if ((long)(nextFrame - themicros) > 0L)
     return;
 
@@ -992,13 +857,11 @@ void TimeLights()
   // Output timing statistics to serial port for debugging.
   if (0) // Choice to output jitter time to debug
   {
-    Serial.print("Average jitter is ");
-    Serial.println(aveTime);
+    Serial.printf("Average jitter is %f\n", aveTime);
   }
   if (0) // Choice to output loop avg time to debug
   {
-    Serial.print("Average loop time is ");
-    Serial.println(aveLoop);
+    Serial.printf("Average loop time is %f\n", aveLoop);
   }
 
   // Let's see what mode we're in...
@@ -1020,10 +883,8 @@ void TimeLights()
     if (currentFrame == NULL) // No frame to display - black out.
     {
       display_state_now = NONE_DISPLAY; // no change required.
-      strip0.clear();
-      strip1.clear();
-      strip0.show();
-      strip1.show();
+      ClearStrips();
+      ShowStrips();
       return;
     }
     long microdelay = (long)currentFrame[nextFindex].microdelay;
@@ -1034,18 +895,13 @@ void TimeLights()
       long totalFramesTime = themicros - totalFrameStartTime;
       if (0 && totalFrameStartTime != ~0L) // Choice to debug statistics
       {
-        Serial.print("Back to frame 0 - total animation duration: ");
-        Serial.println(totalFramesTime);
+        Serial.printf("Back to frame 0 - total animation duration: %ld\n", totalFramesTime);
         if (totalFramesTime < minFramesTime)
           minFramesTime = totalFramesTime;
         if (totalFramesTime > maxFramesTime)
           maxFramesTime = totalFramesTime;
-        Serial.print("min frame time: ");
-        Serial.print(minFramesTime);
-        Serial.print("max frame time");
-        Serial.println(maxFramesTime);
-        Serial.print("Expected total frame time: ");
-        Serial.println(expectedTotalFramesTime);
+        Serial.printf("min frame time: %ld max frame time %ld\n", minFramesTime, maxFramesTime);
+        Serial.printf("Expected total frame time: %ld\n", expectedTotalFramesTime);
       }
       totalFramesTime = 0L;
       expectedTotalFramesTime = 0L;
@@ -1069,15 +925,13 @@ void TimeLights()
       }
     }
     nextFrame = microdelay + themicros;
-    //  Serial.print("TimeLights says set frame ");
-    //  Serial.println(nextFindex);
+    //  Serial.printf("TimeLights says set frame %d\n", nextFindex);
     // ASSUME: strip1 & strip0 have the same number of pixels.
-    for (int i = 0; i < strip0.numPixels() + strip1.numPixels(); i++)
+    for (int i = 0; i < width * height; i++)
     {
       setOffsetPixel(i, currentFrame[nextFindex].color[i]);
     }
-    strip0.show();
-    strip1.show();
+    ShowStrips();
     nextFindex++;
     if (nextFindex > myFrameCount || currentFrame[nextFindex].microdelay == -1L)
     {
@@ -1092,10 +946,9 @@ void displayStartup()
   // Empty the frames...
   defaultFrames();
   // Allocate new frames
-  int pixelCount = strip0.numPixels() + strip1.numPixels();
+  int pixelCount = width * height;
   int frameCount = pixelCount;
-  // Serial.print("New frame count: ");
-  // Serial.println(frameCount);
+  // Serial.printf("New frame count: %d\n", frameCount);
   nextFrameSet = new frame[frameCount + 1];
   if (nextFrameSet == NULL)
   {
@@ -1108,7 +961,7 @@ void displayStartup()
     nextFrameSet[i].microdelay = 10000;
     for (int j = 0; j <= i; j++)
     {
-      nextFrameSet[i].color[j] = (current_offsets_fun(j, strip0.numPixels()) / strip0.numPixels()) ? Adafruit_NeoPixel::Color(0, 0x3f, 0) : Adafruit_NeoPixel::Color(0x3f, 0, 0);
+      nextFrameSet[i].color[j] = (current_offsets_fun(j, width) / (width / 2)) ? Adafruit_NeoPixel::Color(0, 0x3f, 0) : Adafruit_NeoPixel::Color(0x3f, 0, 0);
     }
     for (int j = i + 1; j < pixelCount; j++)
     {
@@ -1119,9 +972,91 @@ void displayStartup()
   SetCurrentFrame(nextFrameSet, frameCount);
 }
 
+void displayShutup()
+{
+  // This is called on disconnect.
+  // Empty the frames...
+  defaultFrames();
+  // Allocate new frames
+  int pixelCount = width * height;
+  int frameCount = pixelCount;
+  //Serial.printf("New frame count: %d\n", frameCount);
+  nextFrameSet = new frame[frameCount + 1];
+  if (nextFrameSet == NULL)
+  {
+    //Serial.println("Badness on the frame allocation!");
+  }
+  for (int i = 0; i < frameCount; i++)
+  {
+    //Serial.printf("Frame # %d\n",i);
+    int blue = 0x0ff;// * (frameCount - i) / frameCount;
+    // Blue lights, fade to black.
+    nextFrameSet[i].microdelay = 100000;
+    for (int j = 0; j < frameCount - i; j++)
+    {
+      if (j < pixelCount) {
+        nextFrameSet[i].color[j] = Adafruit_NeoPixel::Color(0, 0, (uint8_t)blue);
+        //Serial.printf("LED %d set to blue\n",j);
+      }
+      else {
+        //Serial.printf("LED %d not set - out of range!\n",j);
+      }
+    }
+    for (int j = frameCount-i; j < pixelCount; j++)
+    {
+      //Serial.printf("Led %d set black\n",j);
+      nextFrameSet[i].color[j] = (uint32_t)0;
+    }
+  }
+  nextFrameSet[frameCount].microdelay = -2L; // Special flag, "return to default"
+  SetCurrentFrame(nextFrameSet, frameCount);
+}
+
+void onUserButtonClick()
+{
+  // Represents a full cycle of button-down, button-up.
+  // Simple thing to demonstrate it works.
+  const uint32_t Colours[] = {
+      Adafruit_NeoPixel::Color(255, 0, 0),
+      Adafruit_NeoPixel::Color(255, 255, 0),
+      Adafruit_NeoPixel::Color(0, 255, 0),
+      Adafruit_NeoPixel::Color(0, 255, 255),
+      Adafruit_NeoPixel::Color(0, 0, 255),
+      Adafruit_NeoPixel::Color(255, 0, 255),
+  };
+  const int colourCount = sizeof Colours / sizeof *Colours;
+  static int thisColour = 0;
+  SetCurrentFrame(NULL, 0);
+  neoshow(Colours[thisColour]);
+  thisColour = (thisColour + 1) % colourCount;
+}
+
 void loop()
 {
   // put your main code here, to run repeatedly:
+  // User Switch?
+  int reading = lastButtonState;
+  if (PIN_BUTTON1 < (PINS_COUNT)) {
+    reading = digitalRead(PIN_BUTTON1);
+  }
+  ulong nowms = millis();
+  if (reading != lastButtonState)
+  {
+    lastDebounceTime = nowms;
+  }
+  if (nowms - lastDebounceTime > debounceDelay)
+  {
+    if (reading != buttonState)
+    {
+      buttonState = reading;
+      if (buttonState == HIGH)
+      {
+        onUserButtonClick();
+      }
+    }
+    lastDebounceTime = nowms - debounceDelay - debounceDelay; // avoid clocking!
+  }
+  lastButtonState = reading;
 
   TimeLights();
   // AMJ - If we have poor communication of commands, remove the following line again:
@@ -1132,7 +1067,7 @@ void loop()
 void asyncReadAndProcess(int readable)
 {
   /*
-   * V - return version - "DiaBLE v2.0:L01F", where '0' is the pin for the 0 row of LEDs and '1' is the pin for the 1 row. 'F' or 'W' indicates fold state of wings. Folded or Wings. I prefer Wings, because bigger clearer image.
+   * V - return version - "DiaBLE v2.0:L01F", where '0' is the pin for the 0 row of LEDs and '1' is the pin for the 1 row. 'F' or 'W' or 'S' indicates fold state of wings. Folded or Wings. I prefer Wings, because bigger clearer image.
    * S - setup dimensions - byte width, byte height, byte stride, byte Components, byte is400Hz - basically ignored!
    * C - clear to colour - 3 bytes red, green, blue
    * B - set overall brightness - one byte, 0-255.
@@ -1179,8 +1114,7 @@ command_loop:
     // T - Title this unit. Sets its name.
     // Y - Cycle colours.
     // X - Sparkle
-    Serial.print("command_state_now is NONE_COMMAND, command is ");
-    Serial.println(blecmd);
+    Serial.printf("command_state_now is NONE_COMMAND, command is %d\n", blecmd);
     switch (blecmd)
     {
     case -1:
@@ -1189,11 +1123,13 @@ command_loop:
       break;
     case 'V':
     {
-      char response[40]; // overkill, its really only 30 characters including the null. Today.
-      sprintf(response, "VDiaBLE v%1.2f:L%02d%02d%c:S%d,%d,%d,%d,%d\r\n", 2.00, persistentSettings.GetPin0(), persistentSettings.GetPin1(),
-              persistentSettings.GetFold(), persistentSettings.GetWidth(), height, stride, componentsValue, is400Hz);
+      char response[80]; // overkill, its really only 30 characters including the null. Today.
+
+      sprintf(response, "VDiaBLE v%1.2f:L%02d%02d%c:S%d,%d,%d,%d,%d\r\n", 2.10, persistentSettings.GetPin0(), persistentSettings.GetPin1(),
+              persistentSettings.GetFold(), persistentSettings.GetWidth(), persistentSettings.GetHeight(), stride, componentsValue, is400Hz);
       Serial.print(response);
       sendbleu(response);
+
     }
       if (readable > 0)
       {
@@ -1208,33 +1144,20 @@ command_loop:
       width = waitread();
       height = waitread();
       // If going down a size, we want to leave unused pixels black.
-      strip0.clear();
-      strip1.clear();
-      strip0.show();
-      strip1.show();
-      strip0.updateLength(width);
-      strip1.updateLength(width);
+      ClearStrips();
+      ShowStrips();
+      SetStripsLength(width);
       // If going up a size, we want new pixels not to be random, so they get set black.
-      strip0.clear();
-      strip1.clear();
-      strip0.show();
-      strip1.show();
+      ClearStrips();
+      ShowStrips();
       stride = waitread();
       componentsValue = waitread();
       is400Hz = waitread();
-      Serial.print("\tsize: ");
-      Serial.print(width, 10);
-      Serial.print("x");
-      Serial.println(height, 10);
-      Serial.print("\tstride: ");
-      Serial.println(stride, 10);
-      Serial.print("\tcomponents: ");
-      Serial.println(componentsValue, 10);
-      Serial.print("\tis400Hz: ");
-      Serial.println(is400Hz, 10);
-      Serial.println("\n\n");
+
+      Serial.printf("\tsize: %dx%d\n\tstride: %d\n\tcomponents: %d\n\tis400Hz: %d\n\n\n", width, height, stride, componentsValue, is400Hz);
       persistentSettings.SetSize((byte)width, (byte)height, (byte)stride, (byte)componentsValue, (byte)is400Hz);
       persistentSettings.WriteSettings();
+
       readable -= 5;
       sendbleuok();
       break;
@@ -1253,10 +1176,8 @@ command_loop:
       }
       readable -= 3;
       // Cheat - don't need to do it with the offsets!
-      strip0.fill(Adafruit_NeoPixel::Color(color[0], color[1], color[2]), 0, strip0.numPixels());
-      strip1.fill(Adafruit_NeoPixel::Color(color[0], color[1], color[2]), 0, strip0.numPixels());
-      strip0.show();
-      strip1.show();
+      FillStrips(Adafruit_NeoPixel::Color(color[0], color[1], color[2]));
+      ShowStrips();
       sendbleuok();
       break;
     case 'B':
@@ -1266,37 +1187,25 @@ command_loop:
       }
       brightness = waitread();
       readable--;
-      strip0.setBrightness(brightness);
-      strip1.setBrightness(brightness);
-      strip0.show();
-      strip1.show();
+      SetStripsBrightness(brightness);
+      ShowStrips();
       sendbleuok();
       break;
     case 'P':
       x = waitread();
       y = waitread();
       readable -= 2;
-      // Serial.print("\tPixel: ");Serial.print(x);Serial.print(" x ");Serial.println(y);
+      // Serial.printf("\tPixel: %d x %d\n", x, y);
       for (int i = 0; i < 3; i++)
       {
         color[i] = waitread();
       }
       readable -= 3;
-      width = strip0.numPixels();
-      // Serial.print("\tColor: ");Serial.print(color[0]);Serial.print(" ");Serial.print(color[1]);Serial.print(" ");Serial.println(color[2]);
+      // Serial.printf("\tColor: %d %d %d\n", (int)color[0], (int)color[1], (int)color[2]);
       offset_led = y * width + x;
       color_set = Adafruit_NeoPixel::Color(color[0], color[1], color[2]);
-      switch (offset_led / width) // y
-      {
-      case 0:
-        strip0.setPixelColor(offset_led % width, color_set); // x
-        strip0.show();
-        break;
-      case 1:
-        strip1.setPixelColor(offset_led % width, color_set); // x
-        strip1.show();
-        break;
-      }
+      setOffsetPixel(offset_led, color_set);
+      ShowStrips();
       sendbleuok();
       break;
       // ADDED commands - not in the bluefruit sketch from Adafruit.
@@ -1308,10 +1217,9 @@ command_loop:
       Serial.println("Command N\tClear all frames");
       defaultFrames();
       SetCurrentFrame(NULL, 0);
-      strip0.clear();
-      strip1.clear();
-      strip0.show();
-      strip1.show();
+
+      ClearStrips();
+      ShowStrips();
       //
       sendbleuok();
       break;
@@ -1322,9 +1230,8 @@ command_loop:
       frameOffset = 0;
       Serial.println("Deleted old frames");
       // Allocate currentFrame
-      nextFrameCount = (((unsigned int)(unsigned byte)waitread()) << 8) | (unsigned int)(unsigned byte)waitread();
-      Serial.print("New frame count: ");
-      Serial.println(nextFrameCount);
+      nextFrameCount = (((unsigned int)(byte)waitread()) << 8) | (unsigned int)(byte)waitread();
+      Serial.printf("New frame count: %d\n", nextFrameCount);
       nextFrameSet = new frame[nextFrameCount + 1];
       if (nextFrameSet == NULL)
       {
@@ -1352,34 +1259,30 @@ command_loop:
       p0 = waitread();
       p1 = waitread();
       readable -= 2;
-      strip0.clear();
-      strip0.show();
-      strip0.setPin(p0);
-      strip0.begin();
-      strip0.clear();
-      strip0.show();
-      strip1.clear();
-      strip1.show();
-      strip1.setPin(p1);
-      strip1.begin();
-      strip1.clear();
-      strip1.show();
+      ClearStrips();
+      ShowStrips();
+      SetStripsPin(p0, p1);
+      ClearStrips();
+      ShowStrips();
       switch (foldState = waitread())
       {
       case 'W': // unfolded - wings
-        current_offsets = wing_offsets8;
         folded_state_now = FOLDED_OPEN;
         break;
       case 'F': // folded - lid
-        current_offsets = fold_offsets8;
         folded_state_now = FOLDED_SHUT;
+        break;
+      case 'S': // Single - like wings, but both are soldered together.
+        folded_state_now = FOLDED_SINGLE;
         break;
       }
       readable--;
+
       persistentSettings.SetPin0(p0);
       persistentSettings.SetPin1(p1);
       persistentSettings.SetFold(foldState);
       persistentSettings.WriteSettings();
+
       // Give visual feedback that we're good.
       // Idea: circles out from the middle, green on strip 0, red on strip 1, then black.
       // We can do this also on startup / connect.
@@ -1410,8 +1313,10 @@ command_loop:
       }
       readable -= i;
       buffer[j] = 0;
+
       persistentSettings.SetName(buffer);
       persistentSettings.WriteSettings();
+
       break;
     case 'Y':
       // Colour Cycle - needs parameters to drive how fast we cycle, and how far ahead / behind the edges are from each other.
@@ -1450,7 +1355,7 @@ command_loop:
     }
     break;
   case FRAME_COMMAND:
-    const int frameSize = 3 * (strip0.numPixels() + strip1.numPixels()) + 4;
+    const int frameSize = 3 * (width * height) + 4;
     bool bSerDbg = true;
     while (frameOffset < nextFrameCount * frameSize && readable > 0)
     {
@@ -1464,8 +1369,7 @@ command_loop:
       {
         if (bSerDbg)
         {
-          Serial.print("Frame #");
-          Serial.println(frameIndex);
+          Serial.printf("Frame #%d\n", frameIndex);
         }
         nextFrameSet[frameIndex].microdelay = 0;
       }
@@ -1476,8 +1380,7 @@ command_loop:
         nextFrameSet[frameIndex].microdelay |= lms << (8 * (3 - innerFrameOffset));
         if (bSerDbg && innerFrameOffset == 3)
         {
-          Serial.print("Micros: ");
-          Serial.println(nextFrameSet[frameIndex].microdelay);
+          Serial.printf("Micros: %ld\n", nextFrameSet[frameIndex].microdelay);
         }
       }
       else
@@ -1491,9 +1394,7 @@ command_loop:
         case 0: // red
           if (bSerDbg)
           {
-            Serial.print("LED # ");
-            Serial.print(ledOffset);
-            Serial.print(" Red: ");
+            Serial.printf("LED # %d Red: ", ledOffset);
           }
           nextFrameSet[frameIndex].color[ledOffset] = ((uint32_t)ledval) << 16;
           break;
@@ -1538,8 +1439,7 @@ command_loop:
     if (bSerDbg)
     {
       Serial.println("Terminating");
-      Serial.print("Final frameCount is ");
-      Serial.println(nextFrameCount);
+      Serial.printf("Final frameCount is %d\n", nextFrameCount);
     }
     if (nextFrameSet != NULL)
     {
@@ -1550,12 +1450,7 @@ command_loop:
     sendbleuok();
     break;
   }
-  // Serial.print("Processed command character: ");
-  // Serial.print((int)blecmd);
-  // Serial.print(" ");
-  // Serial.print((char)blecmd);
-  // Serial.println();
-  //  Serial.println("Waiting for OK");
+  // Serial.printf("Processed command character: %d %c\nWaiting for OK\n", (int)blecmd, (char)blecmd);
   //  ble.waitForOK();
 }
 
