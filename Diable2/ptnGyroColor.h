@@ -72,7 +72,7 @@ struct my_gyro_range
 };
 const int gyro_range_count = sizeof ranges / sizeof *ranges;
 
-class gyroColor
+class pgyroColor : public pattern
 {
   // First display mode to use the gyroscope readings.
   // Intent: Pick a colour based on the range we are using:
@@ -95,21 +95,22 @@ class gyroColor
   // 125: lights filled should be (range percent) * nPixels / 75
   // 4000: lights filled should be (range percent-25) * nPixels / 75
   // 4000: if range percent >= 100, set all pixels white to indicate overflow.
-public:
-  // Static variables, because we only have a singleton.
-  static float range_top, range_value, range_percent;
-  static float accel_y;
-  static int current_range_index;
-  static rolling_average average_x, average_y;
-  // Static functions
-  static void start()
-  {
+private:
+  float range_top, range_value, range_percent;
+  float accel_y;
+  int current_range_index;
+  rolling_average average_x, average_y;
+
+  pgyroColor() : average_x(1000), average_y(1000) {
     getRange();
-    //    Serial.printf(String("Gyro Start time = %lx\n",micros());
-    display_state_now = GYRO_DISPLAY;
-    tick();
   }
-  static void getRange()
+  public:
+  static pattern *Create() {
+    pattern *pat = new pgyroColor();
+    display_state_now = GYRO_DISPLAY;
+    return pat;
+  }
+  void getRange()
   {
     gyro_range current_range = lsm6ds33.getGyroRange();
     current_range_index = 0;
@@ -125,7 +126,7 @@ public:
 
     range_top = ranges[current_range_index].top;
   }
-  static void getReading()
+  void getReading()
   {
     sensors_event_t accel;
     sensors_event_t gyro;
@@ -161,7 +162,7 @@ public:
     average_x.add(accel.acceleration.x);
     Serial.printf("Accel reading received: y=%f; x=%f\n", accel.acceleration.y, accel.acceleration.x);
   }
-  static void tick()
+  void tick()
   {
     nextFrame = micros() + 20000UL;
     getReading();
@@ -216,7 +217,4 @@ public:
     sendbleu((String(">") + String(accel_y) + String(",") + String(range_value) + String(",") + String(average_y.average())).c_str());
   }
 };
-float gyroColor::range_top, gyroColor::range_value, gyroColor::range_percent, gyroColor::accel_y;
-int gyroColor::current_range_index;
-rolling_average gyroColor::average_x(1000);
-rolling_average gyroColor::average_y(1000);
+

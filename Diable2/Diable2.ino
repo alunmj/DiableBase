@@ -304,6 +304,7 @@ void SetCurrentFrame(struct frame *_nextFrameSet, int _nextFrameCount)
   currentFrame = _nextFrameSet;
   minFramesTime = 0x7fffffffL;
   maxFramesTime = 0L;
+  pattern::switch_pattern(nullptr);
   display_state_now = FRAME_DISPLAY;
 }
 
@@ -566,78 +567,70 @@ void TimeLights()
     Serial.printf("Average loop time is %f\n", aveLoop);
   }
 
-  // Let's see what mode we're in...
-  switch (display_state_now)
+  // Let's run the current pattern...
+  if (!pattern::tickNow())
   {
-  case CYCLE_DISPLAY:
-    cycle::tick();
-    break;
-  case SPARKLE_DISPLAY:
-    sparkle::tick();
-    break;
-#ifdef GYRO_CODE
-  case GYRO_DISPLAY:
-    gyroColor::tick();
-    break;
-#endif // GYRO_CODE
-  case FRAME_DISPLAY:
+    switch (display_state_now)
+    {
+    case FRAME_DISPLAY:
 
-    if (currentFrame == NULL) // No frame to display - black out.
-    {
-      display_state_now = NONE_DISPLAY; // no change required.
-      ClearStrips();
+      if (currentFrame == NULL) // No frame to display - black out.
+      {
+        display_state_now = NONE_DISPLAY; // no change required.
+        ClearStrips();
+        ShowStrips();
+        return;
+      }
+      long microdelay = (long)currentFrame[nextFindex].microdelay;
+      expectedTotalFramesTime += microdelay;
+      if (nextFindex == 0) // Collect animation statistics
+      {
+        // TODO: Send statistics over bluetooth?
+        long totalFramesTime = themicros - totalFrameStartTime;
+        if (0 && totalFrameStartTime != ~0L) // Choice to debug statistics
+        {
+          Serial.printf("Back to frame 0 - total animation duration: %ld\n", totalFramesTime);
+          if (totalFramesTime < minFramesTime)
+            minFramesTime = totalFramesTime;
+          if (totalFramesTime > maxFramesTime)
+            maxFramesTime = totalFramesTime;
+          Serial.printf("min frame time: %ld max frame time %ld\n", minFramesTime, maxFramesTime);
+          Serial.printf("Expected total frame time: %ld\n", expectedTotalFramesTime);
+        }
+        totalFramesTime = 0L;
+        expectedTotalFramesTime = 0L;
+        totalFrameStartTime = themicros;
+      }
+      if (microdelay & 0x80000000L) // 'negative' (but it's unsigned)
+      {
+        // Special flags.
+        switch (-microdelay)
+        {
+        case 2L: // Return to default frame.
+          Serial.println("Return to default frame");
+          defaultFrames();
+          return;
+          break;
+        case 3L: // Drop to black.
+          Serial.println("Return to black frame");
+          SetCurrentFrame(NULL, 0);
+          return;
+          break;
+        }
+      }
+      nextFrame = microdelay + themicros;
+      //  Serial.printf("TimeLights says set frame %d\n", nextFindex);
+      // ASSUME: strip1 & strip0 have the same number of pixels.
+      for (int i = 0; i < width * height; i++)
+      {
+        setOffsetPixel(i, currentFrame[nextFindex].color[i]);
+      }
       ShowStrips();
-      return;
-    }
-    long microdelay = (long)currentFrame[nextFindex].microdelay;
-    expectedTotalFramesTime += microdelay;
-    if (nextFindex == 0) // Collect animation statistics
-    {
-      // TODO: Send statistics over bluetooth?
-      long totalFramesTime = themicros - totalFrameStartTime;
-      if (0 && totalFrameStartTime != ~0L) // Choice to debug statistics
+      nextFindex++;
+      if (nextFindex > myFrameCount || currentFrame[nextFindex].microdelay == -1L)
       {
-        Serial.printf("Back to frame 0 - total animation duration: %ld\n", totalFramesTime);
-        if (totalFramesTime < minFramesTime)
-          minFramesTime = totalFramesTime;
-        if (totalFramesTime > maxFramesTime)
-          maxFramesTime = totalFramesTime;
-        Serial.printf("min frame time: %ld max frame time %ld\n", minFramesTime, maxFramesTime);
-        Serial.printf("Expected total frame time: %ld\n", expectedTotalFramesTime);
+        nextFindex = 0;
       }
-      totalFramesTime = 0L;
-      expectedTotalFramesTime = 0L;
-      totalFrameStartTime = themicros;
-    }
-    if (microdelay & 0x80000000L) // 'negative' (but it's unsigned)
-    {
-      // Special flags.
-      switch (-microdelay)
-      {
-      case 2L: // Return to default frame.
-        Serial.println("Return to default frame");
-        defaultFrames();
-        return;
-        break;
-      case 3L: // Drop to black.
-        Serial.println("Return to black frame");
-        SetCurrentFrame(NULL, 0);
-        return;
-        break;
-      }
-    }
-    nextFrame = microdelay + themicros;
-    //  Serial.printf("TimeLights says set frame %d\n", nextFindex);
-    // ASSUME: strip1 & strip0 have the same number of pixels.
-    for (int i = 0; i < width * height; i++)
-    {
-      setOffsetPixel(i, currentFrame[nextFindex].color[i]);
-    }
-    ShowStrips();
-    nextFindex++;
-    if (nextFindex > myFrameCount || currentFrame[nextFindex].microdelay == -1L)
-    {
-      nextFindex = 0;
     }
   }
 }
@@ -1027,7 +1020,8 @@ command_loop:
       {
         int8_t speed = waitread();
         uint16_t step = ((waitread() << 8) | (waitread()));
-        cycle::start(speed, step);
+        pattern::switch_pattern(pcycle::Create(speed, step));
+        // cycle::start(speed, step);
       }
       break;
     case 'X':
@@ -1036,14 +1030,16 @@ command_loop:
         uint8_t chance = waitread();
         uint32_t foreground = Adafruit_NeoPixel::Color(waitread(), waitread(), waitread());
         uint32_t background = Adafruit_NeoPixel::Color(waitread(), waitread(), waitread());
-        sparkle::start(chance, foreground, background);
+        pattern::switch_pattern(psparkle::Create(chance, foreground, background));
+        // sparkle::start(chance, foreground, background);
       }
       break;
 
 #ifdef GYRO_CODE
     case 'G':
       // Gyro - currently, no parameters. Might feel like adding more later.
-      gyroColor::start();
+      pattern::switch_pattern(pgyroColor::Create());
+      // gyroColor::start();
       break;
 #endif // GYRO_CODE
 
