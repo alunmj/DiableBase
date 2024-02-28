@@ -1,8 +1,8 @@
 {
-    "configuration": "softdevice=s140v6,debug=l0,debug_output=serial",
     "board": "adafruit:nrf52:feather52840sense",
-    "programmer": "adafruit:nrfutil_boot",
+    "programmer": "nrfutil_boot",
     "sketch": "Diable2\\Diable2.ino",
-    "port": "COM4",
-    "output": "./build"
+    "port": "COM3",
+    "output": "./build",
+    "configuration": "softdevice=s140v6,debug=l0,debug_output=serial"
 }

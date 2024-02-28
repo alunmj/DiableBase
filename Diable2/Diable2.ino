@@ -1,13 +1,9 @@
 #define GYRO_CODE
-//#define WAIT_FOR_SERIAL
-//#define NO_NEO
-// New pattern ideas:
-// Chasing circles - a number of circles, going in and out - linearly, sinusoidally? - each a different colour light, different speeds
-// Random squares - rectangles at random sizes and positions.
-// Cubes - just like squares, but wireframe.
-// Plaid / Argyle
-
-#include <SPI.h>
+#include <bluefruit.h>
+//#include <SPI.h>
+#if not defined(_VARIANT_ARDUINO_DUE_X_) && not defined(_VARIANT_ARDUINO_ZERO_)
+//  #include <SoftwareSerial.h>
+#endif
 
 #include <Adafruit_NeoPixel.h>
 
@@ -269,9 +265,9 @@ void SetStripsPin(int pin0, int pin1)
 void setOffsetPixel(int i, uint32_t colorToSet)
 {
   uint8_t offset_led;
-  offset_led = current_offsets_fun(i, width);
-  uint16_t inset_led = offset_led % width;
-  uint8_t strip_num = offset_led / width;
+  offset_led = current_offsets_fun(i, strip0.numPixels());
+  uint16_t inset_led = offset_led % strip0.numPixels();
+  uint8_t strip_num = offset_led / strip0.numPixels();
   switch (strip_num)
   {
   case 0:
@@ -283,304 +279,10 @@ void setOffsetPixel(int i, uint32_t colorToSet)
   }
 }
 
-class cycle
-{
-public:
-  static int hue1;  // The hue of the first pixel, from 0-65535.
-  static int speed; // How fast we go, in 500 micros jumps - each jump being one step around the colour wheel
-  static int step;  // How many steps around the colour wheel between each LED. 0-65535
-  static unsigned long starttime;
-
-public:
-  static void start(int _speed, int _step)
-  {
-    speed = _speed;
-    step = _step;
-    hue1 = 0;
-    starttime = micros();
-    Serial.printf("Start time = %lx\n", starttime);
-    display_state_now = CYCLE_DISPLAY;
-    tick();
-  }
-
-  static void tick()
-  {
-    // Note: 35 minutes is 0x80 00 00 00 / 1,000,000 - so, clocking from signed to unsinged in micros()).
-    unsigned long tnow = micros() - starttime;
-    nextFrame = micros() + 500UL;      // Prevents TimeLights() from deciding we don't need to be run!
-    unsigned long dura = tnow / 500UL; // 500 micros is 1 speed 'tick' for the cycle.
-    int newhue1 = (int)((dura * (long)speed) & 0x0000ffffUL);
-
-    if (Serial)
-      brightness = 100; // If we're at the end of a cable, we need less brights.
-
-    hue1 = newhue1;
-    for (int i = 0; i < width * height; i++)
-    {
-      uint16_t hue = (uint16_t)(hue1 + i * step);
-      uint32_t col = Adafruit_NeoPixel::ColorHSV(hue, 255, brightness);
-      uint32_t gam = Adafruit_NeoPixel::gamma32(col);
-      setOffsetPixel(i, gam);
-    }
-    ShowStrips();
-  }
-};
-int cycle::hue1 = 0;
-int cycle::speed = 0;
-int cycle::step = 0;
-unsigned long cycle::starttime = 0;
-
-class sparkle
-{
-public:
-  static int chance; // 0..255 out of 255. 255 = almost always a sparkle, 0 = never. Good values? 200? 100?
-  static uint32_t foreground;
-  static uint32_t background;
-  static void start(int _chance = 20, uint32_t _foreground = 0xffffffff, uint32_t _background = 0)
-  {
-    chance = _chance;
-    foreground = _foreground;
-    background = _background;
-    display_state_now = SPARKLE_DISPLAY;
-    tick();
-  }
-  static void tick()
-  {
-    nextFrame = micros() + 500UL; // Prevents TimeLights() from deciding we don't need to be run!
-    FillStrips(background);
-    if (random(255) <= chance)
-    {
-      int pick = random(width * height);
-      setOffsetPixel(pick, foreground);
-    }
-    ShowStrips();
-  }
-};
-uint32_t sparkle::background;
-uint32_t sparkle::foreground;
-int sparkle::chance;
-
+#include "ptnCycle.h"
+#include "ptnSparkle.h"
 #ifdef GYRO_CODE
-class rolling_average
-{
-  // Implemented using a ring of floats
-  float *avestore = nullptr;
-  int size = 0, offset = 0, count = 0;
-  float total = 0.0;
-  float local_min = 1000000.0, local_max = -1000000.0;
-
-public:
-  rolling_average(int _size = 100)
-  {
-    if (avestore)
-    {
-      delete[] avestore;
-    }
-    size = _size;
-    avestore = new float[size];
-    offset = 0;
-    count = 0;
-    total = 0.0;
-  }
-  void add(float _value)
-  {
-    if (count != size)
-    {
-      avestore[offset++] = _value;
-      count++;
-    }
-    else
-    {
-      total -= avestore[offset];
-      avestore[offset++] = _value;
-    }
-    if (offset >= size)
-    {
-      offset = 0;
-    }
-    total += _value;
-  }
-  float average()
-  {
-    if (count == 0)
-    {
-      return 0.0; // Let's not be dividing by zero any time soon.
-    }
-    return total / (float)count;
-  }
-  ~rolling_average()
-  {
-    if (avestore)
-    {
-      delete[] avestore;
-    }
-  }
-};
-
-struct my_gyro_range
-{
-  gyro_range range;
-  uint32_t color;
-  float top;
-} const ranges[] = {
-    // Top values are more / less in rad/s, but I really don't know how to trust those numbers.
-    {LSM6DS_GYRO_RANGE_125_DPS, Adafruit_NeoPixel::Color(255, 0, 0), 2.50},    // red
-    {LSM6DS_GYRO_RANGE_250_DPS, Adafruit_NeoPixel::Color(255, 255, 0), 5.0},   // yellow
-    {LSM6DS_GYRO_RANGE_500_DPS, Adafruit_NeoPixel::Color(0, 255, 0), 10.0},    // green
-    {LSM6DS_GYRO_RANGE_1000_DPS, Adafruit_NeoPixel::Color(0, 255, 255), 20.0}, // cyan
-    {LSM6DS_GYRO_RANGE_2000_DPS, Adafruit_NeoPixel::Color(0, 0, 255), 40.0},   // blue
-    //    {ISM330DHCX_GYRO_RANGE_4000_DPS, Adafruit_NeoPixel::Color(255, 0, 255), 80.0}, // magenta
-};
-const int gyro_range_count = sizeof ranges / sizeof *ranges;
-
-class gyroColor
-{
-  // First display mode to use the gyroscope readings.
-  // Intent: Pick a colour based on the range we are using:
-  // 125 - red
-  // 250 - yellow
-  // 500 - green
-  // 1000 - cyan
-  // 2000 - blue
-  // 4000 - magenta
-  //
-  // Then fill the LEDs, one to nPixels, with the speed within that range.
-  // Range percent = (rangeValue - rangeBottom) * 100.0 / (rangeTop-rangeBottom)
-  //
-  // Remember to change range - thinking that if we change range up if range percent is > 75
-  // Change range down if range percent is < 25
-  //
-  // Then lights filled can be (range percent-25) * nPixels/50
-  //
-  // A little special casing when range is 125 or 4000:
-  // 125: lights filled should be (range percent) * nPixels / 75
-  // 4000: lights filled should be (range percent-25) * nPixels / 75
-  // 4000: if range percent >= 100, set all pixels white to indicate overflow.
-public:
-  // Static variables, because we only have a singleton.
-  static float range_top, range_value, range_percent;
-  static float accel_y;
-  static int current_range_index;
-  static rolling_average average_x, average_y;
-  // Static functions
-  static void start()
-  {
-    getRange();
-    //    Serial.printf(String("Gyro Start time = %lx\n",micros());
-    display_state_now = GYRO_DISPLAY;
-    tick();
-  }
-  static void getRange()
-  {
-    gyro_range current_range = lsm6ds33.getGyroRange();
-    current_range_index = 0;
-    int i = 0;
-    for (i = 0; i < gyro_range_count; i++)
-    {
-      if (ranges[i].range == current_range)
-      {
-        current_range_index = i;
-      }
-    }
-    Serial.printf("range = %d maps to index %d of %d\n", (int)current_range, current_range_index, i);
-
-    range_top = ranges[current_range_index].top;
-  }
-  static void getReading()
-  {
-    sensors_event_t accel;
-    sensors_event_t gyro;
-    sensors_event_t temp;
-    getRange();
-
-    lsm6ds33.getEvent(&accel, &gyro, &temp);
-
-    // Z rotation is in gyro.gyro.z as a float in rads / s
-    // I don't care, positive or negative, for this. Maybe if you can reverse a diabolo?
-
-    range_value = gyro.gyro.z > 0.0 ? gyro.gyro.z : -gyro.gyro.z;
-
-    range_percent = (range_value)*100.0 / (range_top);
-
-    /*if (range_percent < 25.0 && current_range_index != 0)
-    {
-      // range_down
-      lsm6ds33.setGyroRange(ranges[current_range_index - 1].range);
-      Serial.printf("Range down! -> %d\n", current_range_index - 1);
-    }
-    else if (range_percent > 75.0 && current_range_index != gyro_range_count - 1)
-    {
-      // range_up
-      lsm6ds33.setGyroRange(ranges[current_range_index + 1].range);
-      Serial.printf("Range up! -> %d\n", current_range_index + 1);
-    }
-    */
-    // TODO: Instead of using average y over the last 100 samples, why not count local minimum and maximum of x and y?
-    Serial.printf("Gyro reading received: z=%f - %%=%f\n", range_value, range_percent);
-    accel_y = accel.acceleration.x;
-    average_y.add(accel.acceleration.y);
-    average_x.add(accel.acceleration.x);
-    Serial.printf("Accel reading received: y=%f; x=%f\n", accel.acceleration.y, accel.acceleration.x);
-  }
-  static void tick()
-  {
-    nextFrame = micros() + 20000UL;
-    getReading();
-    if (accel_y > average_x.average())
-    {
-      HalfFillStrips(Adafruit_NeoPixel::Color(0, 255, 0), Adafruit_NeoPixel::Color(255, 0, 0));
-    }
-    else
-    {
-      HalfFillStrips(Adafruit_NeoPixel::Color(255, 0, 0), Adafruit_NeoPixel::Color(0, 255, 0));
-    }
-    if (0)
-    {
-      float pixelCount = 0;
-      float pixelMax = width * height;
-      uint32_t pixelColor = ranges[current_range_index].color;
-      if (current_range_index == 0)
-      {
-        pixelCount = pixelMax * (range_percent) / 75.0;
-      }
-      else if (current_range_index == gyro_range_count - 1)
-      {
-        pixelCount = pixelMax * (range_percent - 25.0) / 75.0;
-        if (range_percent > 98.0)
-        {
-          pixelCount = pixelMax;
-          pixelColor = Adafruit_NeoPixel::Color(0xff, 0xff, 0xff); // White for 'pegged over full'.
-        }
-      }
-      else
-      {
-        pixelCount = pixelMax * (range_percent - 25.0) / 50.0;
-      }
-      int ipixelCount = (int)pixelCount;
-      int ipixelMax = (int)pixelMax;
-      //    Serial.printf("Lighting up pixels: %d\n", ipixelCount);
-      //    Serial.printf("Pixel color is %d\n", (int)pixelColor);
-      // light up pixelCount pixels at range_color
-      for (int i = 0; i < ipixelMax; i++)
-      {
-        if (i < ipixelCount)
-        {
-          setOffsetPixel(i, pixelColor);
-        }
-        else
-        {
-          setOffsetPixel(i, 0);
-        }
-      }
-    }
-    ShowStrips();
-    sendbleu((String(">") + String(accel_y) + String(",") + String(range_value) + String(",") + String(average_y.average())).c_str());
-  }
-};
-float gyroColor::range_top, gyroColor::range_value, gyroColor::range_percent, gyroColor::accel_y;
-int gyroColor::current_range_index;
-rolling_average gyroColor::average_x(1000);
-rolling_average gyroColor::average_y(1000);
+#include "ptnGyroColor.h"
 #endif // GYRO_CODE
 
 void defaultFrames()
@@ -602,6 +304,7 @@ void SetCurrentFrame(struct frame *_nextFrameSet, int _nextFrameCount)
   currentFrame = _nextFrameSet;
   minFramesTime = 0x7fffffffL;
   maxFramesTime = 0L;
+  pattern::switch_pattern(nullptr);
   display_state_now = FRAME_DISPLAY;
 }
 
@@ -864,78 +567,70 @@ void TimeLights()
     Serial.printf("Average loop time is %f\n", aveLoop);
   }
 
-  // Let's see what mode we're in...
-  switch (display_state_now)
+  // Let's run the current pattern...
+  if (!pattern::tickNow())
   {
-  case CYCLE_DISPLAY:
-    cycle::tick();
-    break;
-  case SPARKLE_DISPLAY:
-    sparkle::tick();
-    break;
-#ifdef GYRO_CODE
-  case GYRO_DISPLAY:
-    gyroColor::tick();
-    break;
-#endif // GYRO_CODE
-  case FRAME_DISPLAY:
+    switch (display_state_now)
+    {
+    case FRAME_DISPLAY:
 
-    if (currentFrame == NULL) // No frame to display - black out.
-    {
-      display_state_now = NONE_DISPLAY; // no change required.
-      ClearStrips();
+      if (currentFrame == NULL) // No frame to display - black out.
+      {
+        display_state_now = NONE_DISPLAY; // no change required.
+        ClearStrips();
+        ShowStrips();
+        return;
+      }
+      long microdelay = (long)currentFrame[nextFindex].microdelay;
+      expectedTotalFramesTime += microdelay;
+      if (nextFindex == 0) // Collect animation statistics
+      {
+        // TODO: Send statistics over bluetooth?
+        long totalFramesTime = themicros - totalFrameStartTime;
+        if (0 && totalFrameStartTime != ~0L) // Choice to debug statistics
+        {
+          Serial.printf("Back to frame 0 - total animation duration: %ld\n", totalFramesTime);
+          if (totalFramesTime < minFramesTime)
+            minFramesTime = totalFramesTime;
+          if (totalFramesTime > maxFramesTime)
+            maxFramesTime = totalFramesTime;
+          Serial.printf("min frame time: %ld max frame time %ld\n", minFramesTime, maxFramesTime);
+          Serial.printf("Expected total frame time: %ld\n", expectedTotalFramesTime);
+        }
+        totalFramesTime = 0L;
+        expectedTotalFramesTime = 0L;
+        totalFrameStartTime = themicros;
+      }
+      if (microdelay & 0x80000000L) // 'negative' (but it's unsigned)
+      {
+        // Special flags.
+        switch (-microdelay)
+        {
+        case 2L: // Return to default frame.
+          Serial.println("Return to default frame");
+          defaultFrames();
+          return;
+          break;
+        case 3L: // Drop to black.
+          Serial.println("Return to black frame");
+          SetCurrentFrame(NULL, 0);
+          return;
+          break;
+        }
+      }
+      nextFrame = microdelay + themicros;
+      //  Serial.printf("TimeLights says set frame %d\n", nextFindex);
+      // ASSUME: strip1 & strip0 have the same number of pixels.
+      for (int i = 0; i < width * height; i++)
+      {
+        setOffsetPixel(i, currentFrame[nextFindex].color[i]);
+      }
       ShowStrips();
-      return;
-    }
-    long microdelay = (long)currentFrame[nextFindex].microdelay;
-    expectedTotalFramesTime += microdelay;
-    if (nextFindex == 0) // Collect animation statistics
-    {
-      // TODO: Send statistics over bluetooth?
-      long totalFramesTime = themicros - totalFrameStartTime;
-      if (0 && totalFrameStartTime != ~0L) // Choice to debug statistics
+      nextFindex++;
+      if (nextFindex > myFrameCount || currentFrame[nextFindex].microdelay == -1L)
       {
-        Serial.printf("Back to frame 0 - total animation duration: %ld\n", totalFramesTime);
-        if (totalFramesTime < minFramesTime)
-          minFramesTime = totalFramesTime;
-        if (totalFramesTime > maxFramesTime)
-          maxFramesTime = totalFramesTime;
-        Serial.printf("min frame time: %ld max frame time %ld\n", minFramesTime, maxFramesTime);
-        Serial.printf("Expected total frame time: %ld\n", expectedTotalFramesTime);
+        nextFindex = 0;
       }
-      totalFramesTime = 0L;
-      expectedTotalFramesTime = 0L;
-      totalFrameStartTime = themicros;
-    }
-    if (microdelay & 0x80000000L) // 'negative' (but it's unsigned)
-    {
-      // Special flags.
-      switch (-microdelay)
-      {
-      case 2L: // Return to default frame.
-        Serial.println("Return to default frame");
-        defaultFrames();
-        return;
-        break;
-      case 3L: // Drop to black.
-        Serial.println("Return to black frame");
-        SetCurrentFrame(NULL, 0);
-        return;
-        break;
-      }
-    }
-    nextFrame = microdelay + themicros;
-    //  Serial.printf("TimeLights says set frame %d\n", nextFindex);
-    // ASSUME: strip1 & strip0 have the same number of pixels.
-    for (int i = 0; i < width * height; i++)
-    {
-      setOffsetPixel(i, currentFrame[nextFindex].color[i]);
-    }
-    ShowStrips();
-    nextFindex++;
-    if (nextFindex > myFrameCount || currentFrame[nextFindex].microdelay == -1L)
-    {
-      nextFindex = 0;
     }
   }
 }
@@ -1325,7 +1020,8 @@ command_loop:
       {
         int8_t speed = waitread();
         uint16_t step = ((waitread() << 8) | (waitread()));
-        cycle::start(speed, step);
+        pattern::switch_pattern(pcycle::Create(speed, step));
+        // cycle::start(speed, step);
       }
       break;
     case 'X':
@@ -1334,14 +1030,16 @@ command_loop:
         uint8_t chance = waitread();
         uint32_t foreground = Adafruit_NeoPixel::Color(waitread(), waitread(), waitread());
         uint32_t background = Adafruit_NeoPixel::Color(waitread(), waitread(), waitread());
-        sparkle::start(chance, foreground, background);
+        pattern::switch_pattern(psparkle::Create(chance, foreground, background));
+        // sparkle::start(chance, foreground, background);
       }
       break;
 
 #ifdef GYRO_CODE
     case 'G':
       // Gyro - currently, no parameters. Might feel like adding more later.
-      gyroColor::start();
+      pattern::switch_pattern(pgyroColor::Create());
+      // gyroColor::start();
       break;
 #endif // GYRO_CODE
 

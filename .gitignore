@@ -1,0 +1,4 @@
+.vscode/**
+build/**
+
+Diable2/*.py
