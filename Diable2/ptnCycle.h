@@ -1,58 +1,17 @@
-class pattern
-{
-protected:
-  static pattern *singleton;
-  unsigned long starttime = 0;
-  enum displayStates display_state = NONE_DISPLAY;
-  pattern()
-  {
-    starttime = micros();
-    display_state_now = display_state;
-    Serial.printf("Start time = %lx\n", starttime);
-    tick();
-  }
-
-public:
-  static void switch_pattern(pattern *newPattern)
-  {
-    if (singleton != nullptr)
-    {
-      pattern *tpat = singleton;
-      singleton = nullptr;
-      delete tpat;
-    }
-    singleton = newPattern;
-  }
-  static bool tickNow()
-  {
-    if (singleton != nullptr)
-    {
-      singleton->tick();
-      return true;
-    }
-    else
-    {
-      return false;
-    }
-  }
-  virtual void tick(){};
-};
-pattern *pattern::singleton = nullptr;
-
 class pcycle : public pattern
 {
 private:
   int hue1;
   int speed;
   int step;
-  enum displayStates display_state = CYCLE_DISPLAY;
-  pcycle(int _speed, int _step) : hue1(0), speed(_speed), step(_step) {}
+  static const enum displayStates display_state = CYCLE_DISPLAY;
+  pcycle(int _speed, int _step) : pattern(), hue1(0), speed(_speed), step(_step) {}
 
 public:
   static pattern *Create(int _speed, int _step)
   {
     pattern *pat = new pcycle(_speed, _step);
-    display_state_now = CYCLE_DISPLAY;
+    display_state_now = display_state;
     return pat;
   }
   void tick()

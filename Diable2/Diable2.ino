@@ -1,17 +1,24 @@
 #define GYRO_CODE
 #include <bluefruit.h>
-//#include <SPI.h>
+#define BATTERY_TEST
+#ifdef BATTERY_TEST
+#include "xiaobatt.h"
+#endif // BATTERY_TEST
+
+#define DIABLE_VERSION 2.30
+
+// #include <SPI.h>
 #if not defined(_VARIANT_ARDUINO_DUE_X_) && not defined(_VARIANT_ARDUINO_ZERO_)
 //  #include <SoftwareSerial.h>
 #endif
+
+#define THEBUTTON D9
 
 #include <Adafruit_NeoPixel.h>
 
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 using namespace Adafruit_LittleFS_Namespace;
-
-#include <bluefruit.h>
 
 #ifdef GYRO_CODE
 #include <Adafruit_LSM6DS33.h>
@@ -114,6 +121,7 @@ enum commandStates command_state_now = NONE_COMMAND; // Commands that might need
 enum displayStates
 {
   NONE_DISPLAY,
+  CHARGE_DISPLAY,
   FRAME_DISPLAY,
   CYCLE_DISPLAY,
   SPARKLE_DISPLAY,
@@ -193,7 +201,8 @@ struct frame *currentFrame = NULL;
 struct frame *nextFrameSet = NULL;
 unsigned int nextFrameCount = 0;
 int myFrameCount = 0;
-unsigned long nextFrame; // micros() at next frame
+unsigned long nextFrame;  // micros() at next frame
+unsigned long battMicros; // micros() for next Serial dump of battery status.
 int nextFindex = 0;
 
 long minFramesTime, maxFramesTime;
@@ -212,9 +221,9 @@ void ClearStrips()
 
 void FillStrips(uint32_t nColor)
 {
-  strip0.fill(nColor, 0, strip0.numPixels());
+  strip0.fill(nColor);
   if (height > 1)
-    strip1.fill(nColor, 0, strip1.numPixels());
+    strip1.fill(nColor);
 }
 
 void HalfFillStrips(uint32_t nColor1, uint32_t nColor2)
@@ -262,6 +271,19 @@ void SetStripsPin(int pin0, int pin1)
   }
 }
 
+void setUnoffsetPixel(int i, uint32_t colorToSet)
+{
+  int strip_num = i / strip0.numPixels();
+  i = i % strip0.numPixels();
+  switch (strip_num) {
+    case 0:
+      strip0.setPixelColor(i,colorToSet);
+      break;
+    case 1:
+      strip1.setPixelColor(i,colorToSet);
+  }
+}
+
 void setOffsetPixel(int i, uint32_t colorToSet)
 {
   uint8_t offset_led;
@@ -279,15 +301,18 @@ void setOffsetPixel(int i, uint32_t colorToSet)
   }
 }
 
+#include "ptnBase.h"
 #include "ptnCycle.h"
 #include "ptnSparkle.h"
 #ifdef GYRO_CODE
 #include "ptnGyroColor.h"
 #endif // GYRO_CODE
+#include "ptnCircles.h"
+#include "ptnSquares.h"
 
 void defaultFrames()
 {
-  Serial.println("Reverting to default frames!");
+  // Serial.println("Reverting to default frames!");
   if (currentFrame != NULL && currentFrame != DEFAULT_FRAME)
   {
     delete[] currentFrame;
@@ -301,6 +326,7 @@ void SetCurrentFrame(struct frame *_nextFrameSet, int _nextFrameCount)
   nextFindex = 0;
   totalFrameStartTime = ~0L;
   nextFrame = micros();
+  battMicros = micros();
   currentFrame = _nextFrameSet;
   minFramesTime = 0x7fffffffL;
   maxFramesTime = 0L;
@@ -320,12 +346,16 @@ BLEUart bleuart;
 
 void neoshow(uint32_t inColor)
 {
-  #ifndef NO_NEO
+#ifndef NO_NEO
   static bool began_neo = false;
-  if (!began_neo) { neo.begin(); began_neo = true; }
+  if (!began_neo)
+  {
+    neo.begin();
+    began_neo = true;
+  }
   neo.setPixelColor(0, inColor);
   neo.show();
-  #endif // NO_NEO
+#endif // NO_NEO
 }
 
 void error(const char *ts)
@@ -344,20 +374,27 @@ void setup()
 {
   //  put your setup code here, to run once:
   InternalFS.begin();
-  
+
+  XiaoBattery::setup();
+
   lastDebounceTime = millis();
-  if (PIN_BUTTON1 < (PINS_COUNT)) {
+  if (PIN_BUTTON1 < (PINS_COUNT))
+  {
     pinMode(PIN_BUTTON1, INPUT_PULLUP); // Prepare user switch for input.
   }
-  neoshow(Adafruit_NeoPixel::Color(0,0,255)); // blue!
+#ifdef THEBUTTON
+  pinMode(THEBUTTON, INPUT);
+#endif                                          // THEBUTTON
+  neoshow(Adafruit_NeoPixel::Color(0, 0, 255)); // blue!
 
   Serial.begin(115200);
-  #ifdef WAIT_FOR_SERIAL
-  while (!Serial) {
+#ifdef WAIT_FOR_SERIAL
+  while (!Serial)
+  {
     delay(10); // Wait for serial?
   }
-  #endif // WAIT_FOR_SERIAL
-  neoshow(Adafruit_NeoPixel::Color(0,0,0)); // black.
+#endif                                        // WAIT_FOR_SERIAL
+  neoshow(Adafruit_NeoPixel::Color(0, 0, 0)); // black.
 
   // InternalFS.format(); // Uncomment to wipe the config.
   defaultFrames();
@@ -369,7 +406,8 @@ void setup()
   Bluefruit.begin();
   Bluefruit.setTxPower(4);
 
-  if (persistentSettings.LoadFile()) {
+  if (persistentSettings.LoadFile())
+  {
     width = persistentSettings.GetWidth();
     height = persistentSettings.GetHeight();
   }
@@ -451,13 +489,14 @@ void setup()
 #ifdef GYRO_CODE
   // gyroColor::start();
 #endif // GYRO_CODE
+  // pattern::switch_pattern(pcircles::Create());
   // TODO: Allow the user to choose a pattern to display at startup?
 }
 
 void rxCallback(uint16_t conn_hdl)
 {
   int readable = bleuart.available();
-  Serial.printf("Bytes read in from BLE: %d\n", readable);
+  // Serial.printf("Bytes read in from BLE: %d\n", readable);
   // We could potentially read more from the FIFO, with bool peek(void *buffer)
   asyncReadAndProcess(readable);
 }
@@ -499,24 +538,24 @@ void startAdv(void)
 
 void connectCallback(uint16_t conn_handle)
 {
-  Serial.printf("New Bluetooth connection - handle is %d\n", (int)conn_handle);
+  // Serial.printf("New Bluetooth connection - handle is %d\n", (int)conn_handle);
 
   neoshow(0);
   BLEConnection *connection = Bluefruit.Connection(conn_handle);
   char central_name[32] = {0};
-  connection->getPeerName(central_name, sizeof(central_name)-1);
+  connection->getPeerName(central_name, sizeof(central_name) - 1);
   Serial.printf("Connected to %s\n", central_name);
 
   // request PHY changed to 2MB - default is BLE_GAP_PHY_AUTO
-  Serial.println("Request to change PHY");
+  // Serial.println("Request to change PHY");
   connection->requestPHY();
 
   // request to update data length
-  Serial.println("Request to change Data Length");
+  // Serial.println("Request to change Data Length");
   connection->requestDataLengthUpdate();
 
   // request mtu exchange
-  Serial.println("Request to change MTU");
+  // Serial.println("Request to change MTU");
   connection->requestMtuExchange(247);
 
   // request connection interval of 7.5 ms
@@ -551,8 +590,46 @@ void TimeLights()
 
   // If we aren't ready for the next frame, quit.
   // If you don't set "nextFrame", you will cycle past it and block until coming back around.
-  if ((long)(nextFrame - themicros) > 0L)
+  if ((long)(nextFrame - themicros) >= 0L)
     return;
+
+    // Every thirty seconds, output battery status to Serial...
+#ifdef BATTERY_TEST
+  if ((long)(battMicros - themicros) <= 0L)
+  {
+    char response[80];
+    XiaoBattery battery;
+    bool isCharging = battery.IsChargingBattery();
+    int charge = battery.GetBatteryPercentage();
+    sprintf(response, "QDiable Charging: %c %02d\r\n", isCharging ? '+' : '=', charge);
+    Serial.print(response);
+    sendbleu(response);
+    battMicros = themicros + 5000000L;
+    if (isCharging) { // Charging, don't display a pattern!
+      // Instead, what we can display is a bar chart of charging progress.
+      // Since the diabolo isn't spinning, we want to start at one end and go to the other.
+      // So, that's lights 
+      int pixelCount = width * height;
+      int greenPixels = (charge *pixelCount / 100);
+      Serial.printf("We're charging, so we should be lighting %d pixels green\r\n", greenPixels);
+
+      for (int i=0; i<pixelCount;i++) {
+        if (greenPixels > 0) {
+          setUnoffsetPixel(i, Adafruit_NeoPixel::Color(0,0x10,0));
+          greenPixels--;
+        } else {
+          setUnoffsetPixel(i, Adafruit_NeoPixel::Color(0x10,0,0));
+        }
+      }
+      ShowStrips();
+      display_state_now = CHARGE_DISPLAY;
+      return;
+    } else {
+      if (display_state_now == CHARGE_DISPLAY)
+        defaultFrames();
+    }
+  }
+#endif // BATTERY_TEST
 
   // More timing statistics - how much average jitter (actual micros - planned micros) is there
   aveTime = (aveTime * 9.0 + (float)(themicros - nextFrame)) / 10.0;
@@ -607,12 +684,12 @@ void TimeLights()
         switch (-microdelay)
         {
         case 2L: // Return to default frame.
-          Serial.println("Return to default frame");
+          // Serial.println("Return to default frame");
           defaultFrames();
           return;
           break;
         case 3L: // Drop to black.
-          Serial.println("Return to black frame");
+          // Serial.println("Return to black frame");
           SetCurrentFrame(NULL, 0);
           return;
           break;
@@ -672,34 +749,37 @@ void displayShutup()
   // This is called on disconnect.
   // Empty the frames...
   defaultFrames();
+  SetStripsBrightness(255);
   // Allocate new frames
   int pixelCount = width * height;
   int frameCount = pixelCount;
-  //Serial.printf("New frame count: %d\n", frameCount);
+  // Serial.printf("New frame count: %d\n", frameCount);
   nextFrameSet = new frame[frameCount + 1];
   if (nextFrameSet == NULL)
   {
-    //Serial.println("Badness on the frame allocation!");
+    // Serial.println("Badness on the frame allocation!");
   }
   for (int i = 0; i < frameCount; i++)
   {
-    //Serial.printf("Frame # %d\n",i);
-    int blue = 0x0ff;// * (frameCount - i) / frameCount;
+    // Serial.printf("Frame # %d\n",i);
+    int blue = 0x0ff; // * (frameCount - i) / frameCount;
     // Blue lights, fade to black.
     nextFrameSet[i].microdelay = 100000;
     for (int j = 0; j < frameCount - i; j++)
     {
-      if (j < pixelCount) {
+      if (j < pixelCount)
+      {
         nextFrameSet[i].color[j] = Adafruit_NeoPixel::Color(0, 0, (uint8_t)blue);
-        //Serial.printf("LED %d set to blue\n",j);
+        // Serial.printf("LED %d set to blue\n",j);
       }
-      else {
-        //Serial.printf("LED %d not set - out of range!\n",j);
+      else
+      {
+        // Serial.printf("LED %d not set - out of range!\n",j);
       }
     }
-    for (int j = frameCount-i; j < pixelCount; j++)
+    for (int j = frameCount - i; j < pixelCount; j++)
     {
-      //Serial.printf("Led %d set black\n",j);
+      // Serial.printf("Led %d set black\n",j);
       nextFrameSet[i].color[j] = (uint32_t)0;
     }
   }
@@ -709,6 +789,31 @@ void displayShutup()
 
 void onUserButtonClick()
 {
+  typedef void (*GenFunc)();
+  const GenFunc funarray[] = {
+      []()
+      { pattern::switch_pattern(pcycle::Create(10, 255)); },
+      []()
+      { pattern::switch_pattern(psparkle::Create(10, Adafruit_NeoPixel::Color(255, 255, 255), Adafruit_NeoPixel::Color(5, 0, 5))); },
+      []()
+      { pattern::switch_pattern(pcircles::Create()); },
+      []()
+      { pattern::switch_pattern(psquares::Create()); },
+      []()
+      {
+        // Black - like it's off!
+        SetCurrentFrame(NULL, 0);
+        display_state_now = NONE_DISPLAY;
+        neoshow(Adafruit_NeoPixel::Color(0,0,0));
+        FillStrips(Adafruit_NeoPixel::Color(0,0,0));
+        ShowStrips();
+      },
+      []() {pattern::switch_pattern(pcycle::Create(100, 2550));},
+      []()
+      { defaultFrames(); },
+  };
+  static int thisFun = 0;
+  const int funCount = sizeof funarray / sizeof *funarray;
   // Represents a full cycle of button-down, button-up.
   // Simple thing to demonstrate it works.
   const uint32_t Colours[] = {
@@ -719,10 +824,19 @@ void onUserButtonClick()
       Adafruit_NeoPixel::Color(0, 0, 255),
       Adafruit_NeoPixel::Color(255, 0, 255),
   };
+  // Switch to a new pattern!
+  funarray[thisFun]();
+  thisFun = (thisFun+1)%funCount;
+  return;
+
+  // Old code - switch to a new colour.
   const int colourCount = sizeof Colours / sizeof *Colours;
   static int thisColour = 0;
   SetCurrentFrame(NULL, 0);
+  display_state_now = NONE_DISPLAY;
   neoshow(Colours[thisColour]);
+  FillStrips(Colours[thisColour]);
+  ShowStrips();
   thisColour = (thisColour + 1) % colourCount;
 }
 
@@ -731,9 +845,13 @@ void loop()
   // put your main code here, to run repeatedly:
   // User Switch?
   int reading = lastButtonState;
-  if (PIN_BUTTON1 < (PINS_COUNT)) {
+  if (PIN_BUTTON1 < (PINS_COUNT))
+  {
     reading = digitalRead(PIN_BUTTON1);
   }
+#ifdef THEBUTTON
+  reading = digitalRead(THEBUTTON);
+#endif // THEBUTTON
   ulong nowms = millis();
   if (reading != lastButtonState)
   {
@@ -809,22 +927,25 @@ command_loop:
     // T - Title this unit. Sets its name.
     // Y - Cycle colours.
     // X - Sparkle
-    Serial.printf("command_state_now is NONE_COMMAND, command is %d\n", blecmd);
+    // A - chasing circles
+    // D - 'squares'
+    // Serial.printf("command_state_now is NONE_COMMAND, command is %d\n", blecmd);
     switch (blecmd)
     {
     case -1:
       Serial.println("We hit the minus one break");
       return;
       break;
-    case 'V':
+    case 'V': // Version
     {
       char response[80]; // overkill, its really only 30 characters including the null. Today.
 
-      sprintf(response, "VDiaBLE v%1.2f:L%02d%02d%c:S%d,%d,%d,%d,%d\r\n", 2.10, persistentSettings.GetPin0(), persistentSettings.GetPin1(),
-              persistentSettings.GetFold(), persistentSettings.GetWidth(), persistentSettings.GetHeight(), stride, componentsValue, is400Hz);
+      sprintf(response, "VDiaBLE v%1.2f:L%02d%02d%c:S%d,%d,%d,%d,%d\r\n", DIABLE_VERSION,
+              persistentSettings.GetPin0(), persistentSettings.GetPin1(),
+              persistentSettings.GetFold(), persistentSettings.GetWidth(),
+              persistentSettings.GetHeight(), stride, componentsValue, is400Hz);
       Serial.print(response);
       sendbleu(response);
-
     }
       if (readable > 0)
       {
@@ -835,6 +956,19 @@ command_loop:
         Serial.println("Single character command V");
       }
       break;
+#ifdef BATTERY_TEST
+    case 'Q': // Charge
+    {
+      char response[80];
+      XiaoBattery battery;
+      bool isCharging = battery.IsChargingBattery();
+      int charge = battery.GetBatteryPercentage();
+      sprintf(response, "QDiable Charging: %c %02d\r\n", isCharging ? '+' : '=', charge);
+      Serial.print(response);
+      sendbleu(response);
+    }
+    break;
+#endif // BATTERY_TEST
     case 'S':
       width = waitread();
       height = waitread();
@@ -912,7 +1046,7 @@ command_loop:
       Serial.println("Command N\tClear all frames");
       defaultFrames();
       SetCurrentFrame(NULL, 0);
-
+      display_state_now = NONE_DISPLAY;
       ClearStrips();
       ShowStrips();
       //
@@ -925,7 +1059,7 @@ command_loop:
       frameOffset = 0;
       Serial.println("Deleted old frames");
       // Allocate currentFrame
-      nextFrameCount = (((unsigned int)(byte)waitread()) << 8) | (unsigned int)(byte)waitread();
+      nextFrameCount = waitread2();
       Serial.printf("New frame count: %d\n", nextFrameCount);
       nextFrameSet = new frame[nextFrameCount + 1];
       if (nextFrameSet == NULL)
@@ -1019,7 +1153,8 @@ command_loop:
       // edge is from the other, and is TWO bytes, because 65535 is a loop around the wheel. (so each LED is M/2.numPixels() from its neighbour.)
       {
         int8_t speed = waitread();
-        uint16_t step = ((waitread() << 8) | (waitread()));
+        uint16_t step = waitread2();
+        readable -= 3;
         pattern::switch_pattern(pcycle::Create(speed, step));
         // cycle::start(speed, step);
       }
@@ -1027,11 +1162,39 @@ command_loop:
     case 'X':
       // Sparkle - needs parameters for how often, and what colours.
       {
+        if (readable != 7)
+        {
+          Serial.printf("Looks like sparkle command with wrong byte count! %d\n", readable);
+        }
         uint8_t chance = waitread();
         uint32_t foreground = Adafruit_NeoPixel::Color(waitread(), waitread(), waitread());
         uint32_t background = Adafruit_NeoPixel::Color(waitread(), waitread(), waitread());
+        readable -= 7;
         pattern::switch_pattern(psparkle::Create(chance, foreground, background));
-        // sparkle::start(chance, foreground, background);
+      }
+      break;
+    case 'A':
+      // chasing circles - needs parameters for numbers of circles, how fast to go.
+      {
+        uint8_t nCircles = waitread();
+        readable--;
+        if (nCircles != 0)
+        {
+          // Maybe four byte int.
+          uint32_t speed = waitread4();
+          readable -= 4;
+          // TODO - implement pattern::switch_pattern(pcircles::Create(nCircles, speed))
+        }
+        else
+        {
+          pattern::switch_pattern(pcircles::Create());
+        }
+      }
+      break;
+    case 'D':
+      // random 'squares' - no parameters yet.
+      {
+        pattern::switch_pattern(psquares::Create());
       }
       break;
 
@@ -1162,6 +1325,16 @@ int waitread()
   }
   //  Serial.println("Reading a byte");
   return bleuart.read();
+}
+
+int waitread2()
+{
+  return ((unsigned)waitread() << 8) | ((unsigned)waitread());
+}
+
+int waitread4()
+{
+  return ((unsigned)waitread2() << 16) | ((unsigned)waitread2());
 }
 
 void sendbleu(const char *sendit)
