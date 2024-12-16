@@ -880,6 +880,7 @@ void loop()
 void asyncReadAndProcess(int readable)
 {
   /*
+   * Q - return charging info - "QDiable Charging: x nnn" - x is "+" if charging, "=" if not. nnn is 0-100 rough percent charged
    * V - return version - "DiaBLE v2.0:L01F", where '0' is the pin for the 0 row of LEDs and '1' is the pin for the 1 row. 'F' or 'W' or 'S' indicates fold state of wings. Folded or Wings. I prefer Wings, because bigger clearer image.
    * S - setup dimensions - byte width, byte height, byte stride, byte Components, byte is400Hz - basically ignored!
    * C - clear to colour - 3 bytes red, green, blue

@@ -17,11 +17,11 @@ class PersistSetting
   void defaults()
   {
     strcpy(_unitName, "DiaBLEINI");
-    _fold = 'F'; // Folded
-    _pin0 = 5;
+    _fold = 'S'; // Single - other values are 'F' for folded, 'W' for wings
+    _pin0 = 10;
     _pin1 = 6;
-    _width = 8;  // LED_COUNT does not need to be hard-set!
-    _height = 2; // Don't think we'll have other than 2 sticks.
+    _width = 16;  // LED_COUNT does not need to be hard-set!
+    _height = 1; // Effectively, number of sticks.
     _componentsValue = 0;
     _stride = 1;
     _is400Hz = 0;
