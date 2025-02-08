@@ -1,5 +1,5 @@
 #include <Adafruit_NeoPixel.h>
-#include <Adafruit_LSM6DS33.h>
+#include <Adafruit_LSM6DS.h>
 class rolling_average
 {
   // Implemented using a ring of floats
@@ -112,7 +112,11 @@ private:
   }
   void getRange()
   {
-    gyro_range current_range = lsm6ds33.getGyroRange();
+  #ifdef AF_LSM
+    int16_t current_range = lsm6ds33.getGyroRange();
+  #else
+    int16_t current_range = lsm6ds33.settings.gyroRange;
+  #endif
     current_range_index = 0;
     int i = 0;
     for (i = 0; i < gyro_range_count; i++)
@@ -122,23 +126,30 @@ private:
         current_range_index = i;
       }
     }
-    Serial.printf("range = %d maps to index %d of %d\n", (int)current_range, current_range_index, i);
+    //Serial.printf("range = %d maps to index %d of %d\n", (int)current_range, current_range_index, i);
 
     range_top = ranges[current_range_index].top;
   }
   void getReading()
   {
-    sensors_event_t accel;
-    sensors_event_t gyro;
-    sensors_event_t temp;
+    float accelX, accelY, accelZ, gyroX, gyroY, gyroZ;
+
     getRange();
 
-    lsm6ds33.getEvent(&accel, &gyro, &temp);
+#ifdef AF_LSM
+    lsm6ds33.readAcceleration(accelX, accelY, accelZ);
+    lsm6ds33.readGyroscope(gyroX, gyroY, gyroZ);
+#else
+    accelX = lsm6ds33.readFloatAccelX();
+    accelY = lsm6ds33.readFloatAccelY();
+    accelZ = lsm6ds33.readFloatAccelZ();
+    gyroZ = lsm6ds33.readFloatGyroZ();
+#endif
 
     // Z rotation is in gyro.gyro.z as a float in rads / s
     // I don't care, positive or negative, for this. Maybe if you can reverse a diabolo?
 
-    range_value = gyro.gyro.z > 0.0 ? gyro.gyro.z : -gyro.gyro.z;
+    range_value = gyroZ > 0.0 ? gyroZ : -gyroZ;
 
     range_percent = (range_value)*100.0 / (range_top);
 
@@ -156,17 +167,17 @@ private:
     }
     */
     // TODO: Instead of using average y over the last 100 samples, why not count local minimum and maximum of x and y?
-    Serial.printf("Gyro reading received: z=%f - %%=%f\n", range_value, range_percent);
-    accel_y = accel.acceleration.x;
-    average_y.add(accel.acceleration.y);
-    average_x.add(accel.acceleration.x);
-    Serial.printf("Accel reading received: y=%f; x=%f\n", accel.acceleration.y, accel.acceleration.x);
+    //Serial.printf("Gyro reading received: z=%f - %%=%f\n", range_value, range_percent);
+    accel_y = accelX;
+    average_y.add(accelY);
+    average_x.add(accelX);
+    //Serial.printf("Accel reading received: z=%f; y=%f; x=%f\n", accelZ, accelY, accelX);
   }
   void tick()
   {
-    nextFrame = micros() + 20000UL;
+    nextFrame = micros() + 2000UL;
     getReading();
-    if (accel_y > average_x.average())
+    if (accel_y < average_x.average())
     {
       HalfFillStrips(Adafruit_NeoPixel::Color(0, 255, 0), Adafruit_NeoPixel::Color(255, 0, 0));
     }
@@ -214,7 +225,7 @@ private:
       }
     }
     ShowStrips();
-    sendbleu((String(">") + String(accel_y) + String(",") + String(range_value) + String(",") + String(average_y.average())).c_str());
+    //sendbleu((String(">") + String(accel_y) + String(",") + String(range_value) + String(",") + String(average_y.average())).c_str());
   }
 };
 

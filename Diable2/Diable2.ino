@@ -1,4 +1,5 @@
 #define GYRO_CODE
+//#define WAIT_FOR_SERIAL
 #include <bluefruit.h>
 #define BATTERY_TEST
 #ifdef BATTERY_TEST
@@ -21,9 +22,16 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 #ifdef GYRO_CODE
-#include <Adafruit_LSM6DS33.h>
+bool isGyro = false;
+//#define AF_LSM
+#ifdef AF_LSM
+#include "Adafruit_LSM6DS3TRC.h"
 
-Adafruit_LSM6DS33 lsm6ds33;
+Adafruit_LSM6DS3TRC lsm6ds33;
+#else
+#include "LSM6DS3.h"
+LSM6DS3 lsm6ds33(I2C_MODE, 0x6a);
+#endif
 #endif // GYRO_CODE
 
 #include "dbleSettings.h"
@@ -320,6 +328,15 @@ void defaultFrames()
   SetCurrentFrame(DEFAULT_FRAME, sizeof(DEFAULT_FRAME) / sizeof(*DEFAULT_FRAME));
 }
 
+void blankFrames() {
+  // Black - like it's off!
+  SetCurrentFrame(NULL, 0);
+  display_state_now = NONE_DISPLAY;
+  neoshow(Adafruit_NeoPixel::Color(0,0,0));
+  FillStrips(Adafruit_NeoPixel::Color(0,0,0));
+  ShowStrips();
+}
+
 void SetCurrentFrame(struct frame *_nextFrameSet, int _nextFrameCount)
 {
   myFrameCount = _nextFrameCount;
@@ -456,7 +473,25 @@ void setup()
 
   Serial.println("Time to connect and send!");
 #ifdef GYRO_CODE
-  if (!lsm6ds33.begin_I2C())
+#ifdef AF_LSM
+// This section of code turns on the 
+#ifdef PIN_LSM6DS3TR_C_POWER
+	pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
+    #if defined(TARGET_SEEED_XIAO_NRF52840_SENSE)
+    NRF_P1->PIN_CNF[8] = ((uint32_t)NRF_GPIO_PIN_DIR_OUTPUT << GPIO_PIN_CNF_DIR_Pos)
+                              | ((uint32_t)NRF_GPIO_PIN_INPUT_DISCONNECT << GPIO_PIN_CNF_INPUT_Pos)
+                              | ((uint32_t)NRF_GPIO_PIN_NOPULL << GPIO_PIN_CNF_PULL_Pos)
+                              | ((uint32_t)NRF_GPIO_PIN_H0H1 << GPIO_PIN_CNF_DRIVE_Pos)
+                              | ((uint32_t)NRF_GPIO_PIN_NOSENSE << GPIO_PIN_CNF_SENSE_Pos);
+    #endif
+	digitalWrite(PIN_LSM6DS3TR_C_POWER, HIGH);
+	delay(10);
+#endif
+
+  if (!lsm6ds33.begin_I2C(0x6a, &Wire1))
+#else
+  if (IMU_SUCCESS != lsm6ds33.begin())
+#endif
   {
     // if (!lsm6ds33.begin_SPI(LSM_CS)) {
     // if (!lsm6ds33.begin_SPI(LSM_CS, LSM_SCK, LSM_MISO, LSM_MOSI)) {
@@ -465,14 +500,20 @@ void setup()
         {
           delay(10);
         }*/
+      isGyro = false;
   }
   else
   {
+    #ifdef AF_LSM
     lsm6ds33.setAccelRange(LSM6DS_ACCEL_RANGE_16_G);
-    lsm6ds33.setAccelDataRate(LSM6DS_RATE_6_66K_HZ);
+    lsm6ds33.setAccelDataRate(LSM6DS_RATE_1_66K_HZ);
 
     lsm6ds33.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS);
     lsm6ds33.setGyroDataRate(LSM6DS_RATE_3_33K_HZ);
+    #endif
+
+   Serial.println("Successfully found LSM6DS33 chip");
+   isGyro = true;
   }
 #endif // GYRO_CODE
 
@@ -487,7 +528,9 @@ void setup()
   // sparkle::start(12, Adafruit_NeoPixel::Color(255, 255, 255), Adafruit_NeoPixel::Color(10, 0, 10));
   // cycle::start(20, 0xff);
 #ifdef GYRO_CODE
-  // gyroColor::start();
+  if (isGyro) {
+    pattern::switch_pattern(pgyroColor::Create());
+  }
 #endif // GYRO_CODE
   // pattern::switch_pattern(pcircles::Create());
   // TODO: Allow the user to choose a pattern to display at startup?
@@ -593,7 +636,7 @@ void TimeLights()
   if ((long)(nextFrame - themicros) >= 0L)
     return;
 
-    // Every thirty seconds, output battery status to Serial...
+    // Every five seconds, output battery status to Serial & tablet...
 #ifdef BATTERY_TEST
   if ((long)(battMicros - themicros) <= 0L)
   {
@@ -611,7 +654,7 @@ void TimeLights()
       // So, that's lights 
       int pixelCount = width * height;
       int greenPixels = (charge *pixelCount / 100);
-      Serial.printf("We're charging, so we should be lighting %d pixels green\r\n", greenPixels);
+      // Serial.printf("We're charging, so we should be lighting %d pixels green\r\n", greenPixels);
 
       for (int i=0; i<pixelCount;i++) {
         if (greenPixels > 0) {
@@ -626,7 +669,7 @@ void TimeLights()
       return;
     } else {
       if (display_state_now == CHARGE_DISPLAY)
-        defaultFrames();
+        blankFrames();
     }
   }
 #endif // BATTERY_TEST
@@ -800,14 +843,7 @@ void onUserButtonClick()
       []()
       { pattern::switch_pattern(psquares::Create()); },
       []()
-      {
-        // Black - like it's off!
-        SetCurrentFrame(NULL, 0);
-        display_state_now = NONE_DISPLAY;
-        neoshow(Adafruit_NeoPixel::Color(0,0,0));
-        FillStrips(Adafruit_NeoPixel::Color(0,0,0));
-        ShowStrips();
-      },
+      { blankFrames(); },
       []() {pattern::switch_pattern(pcycle::Create(100, 2550));},
       []()
       { defaultFrames(); },
