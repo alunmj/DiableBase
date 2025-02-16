@@ -97,7 +97,7 @@ class pgyroColor : public pattern
   // 4000: if range percent >= 100, set all pixels white to indicate overflow.
 private:
   float range_top, range_value, range_percent;
-  float accel_y;
+  float accel_y, accel_x, last_y, last_x;
   int current_range_index;
   rolling_average average_x, average_y;
 
@@ -132,6 +132,7 @@ private:
   }
   void getReading()
   {
+    static unsigned long nextPrint = 0L;
     float accelX, accelY, accelZ, gyroX, gyroY, gyroZ;
 
     getRange();
@@ -168,22 +169,38 @@ private:
     */
     // TODO: Instead of using average y over the last 100 samples, why not count local minimum and maximum of x and y?
     //Serial.printf("Gyro reading received: z=%f - %%=%f\n", range_value, range_percent);
-    accel_y = accelX;
+    accel_y = accelY;
+    accel_x = accelX;
     average_y.add(accelY);
     average_x.add(accelX);
-    //Serial.printf("Accel reading received: z=%f; y=%f; x=%f\n", accelZ, accelY, accelX);
+    if (nextPrint == 0UL || micros() > nextPrint) {
+      Serial.printf("Accel reading received: z=%f; y=%f; x=%f\n", accelZ, accelY, accelX);
+      nextPrint = micros() + 1000000UL;
+    }
   }
   void tick()
   {
-    nextFrame = micros() + 2000UL;
+    nextFrame = micros() + 100UL;
     getReading();
-    if (accel_y < average_x.average())
+    float alpha = atan2(accel_y - last_y, accel_x - last_x);
+    last_y = accel_y;
+    last_x = accel_x;
+    /*
+    if (accel_y < average_y.average())
     {
       HalfFillStrips(Adafruit_NeoPixel::Color(0, 255, 0), Adafruit_NeoPixel::Color(255, 0, 0));
     }
     else
     {
       HalfFillStrips(Adafruit_NeoPixel::Color(255, 0, 0), Adafruit_NeoPixel::Color(0, 255, 0));
+    }
+   */
+    if (last_x > 15.9 || last_y > 15.9 || last_x < -15.9 || last_y < -15.9)
+    {
+      ClearStrips();
+    } else {
+    uint16_t hue = floor(alpha * 32768.0 / PI);
+      HalfFillStrips(Adafruit_NeoPixel::ColorHSV(hue), Adafruit_NeoPixel::ColorHSV(hue + 32768));
     }
     if (0)
     {

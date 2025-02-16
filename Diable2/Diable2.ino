@@ -510,6 +510,8 @@ void setup()
 
     lsm6ds33.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS);
     lsm6ds33.setGyroDataRate(LSM6DS_RATE_3_33K_HZ);
+    #else
+    lsm6ds33.settings.accelSampleRate = 13330;
     #endif
 
    Serial.println("Successfully found LSM6DS33 chip");
