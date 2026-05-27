@@ -180,9 +180,10 @@ private:
   }
   void tick()
   {
-    nextFrame = micros() + 100UL;
+    // Neopixel show() will wait until 300us after the last show(), so no point making this too small!
+    nextFrame = micros() + 1000UL;
     getReading();
-    float alpha = atan2(accel_y - last_y, accel_x - last_x);
+    float alpha = atan2(accel_y - last_y, accel_x - last_x); // Angle from -pi to +pi
     last_y = accel_y;
     last_x = accel_x;
     /*
@@ -199,7 +200,9 @@ private:
     {
       ClearStrips();
     } else {
-    uint16_t hue = floor(alpha * 32768.0 / PI);
+      int nSegments = 20; // clamp to 20 segments
+      int nSegment = floor(((float)nSegments * (alpha+PI) / (PI*2.0)));
+      uint16_t hue = (((float)nSegment * 65535.0) / (float)nSegments);
       HalfFillStrips(Adafruit_NeoPixel::ColorHSV(hue), Adafruit_NeoPixel::ColorHSV(hue + 32768));
     }
     if (0)

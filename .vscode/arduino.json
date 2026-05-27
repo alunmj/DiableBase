@@ -2,7 +2,7 @@
     "board": "Seeeduino:nrf52:xiaonRF52840Sense",
     "programmer": "nrfutil_boot",
     "sketch": "Diable2\\Diable2.ino",
-    "port": "COM13",
+    "port": "COM7",
     "output": "./build",
     "configuration": "softdevice=s140v6,debug=l0"
 }

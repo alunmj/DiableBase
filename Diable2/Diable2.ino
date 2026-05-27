@@ -1,3 +1,5 @@
+// TODO: "Dart" pattern, like colour cycle, but out from the quarter ring.
+// Checkbox option on colour cycle?
 #define GYRO_CODE
 //#define WAIT_FOR_SERIAL
 #include <bluefruit.h>
@@ -22,16 +24,7 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 #ifdef GYRO_CODE
-bool isGyro = false;
-//#define AF_LSM
-#ifdef AF_LSM
-#include "Adafruit_LSM6DS3TRC.h"
-
-Adafruit_LSM6DS3TRC lsm6ds33;
-#else
-#include "LSM6DS3.h"
-LSM6DS3 lsm6ds33(I2C_MODE, 0x6a);
-#endif
+#include "accelMath.h"
 #endif // GYRO_CODE
 
 #include "dbleSettings.h"
@@ -134,6 +127,7 @@ enum displayStates
   CYCLE_DISPLAY,
   SPARKLE_DISPLAY,
   GYRO_DISPLAY,
+  DART_DISPLAY,
 };
 enum displayStates display_state_now = NONE_DISPLAY;
 
@@ -175,6 +169,7 @@ uint32_t allred = 0xff0000;
 uint32_t allblue = 0x0000ff;
 uint32_t allgreen = 0x00ff00;
 uint8_t brightness = 0xff;
+bool bStabiliseThisFrame = false, bStabiliseNextFrame = false;
 
 unsigned int frameOffset = 0;
 
@@ -317,6 +312,7 @@ void setOffsetPixel(int i, uint32_t colorToSet)
 #endif // GYRO_CODE
 #include "ptnCircles.h"
 #include "ptnSquares.h"
+#include "ptnDart.h"
 
 void defaultFrames()
 {
@@ -472,52 +468,10 @@ void setup()
   SetStripsPin(persistentSettings.GetPin0(), persistentSettings.GetPin1());
 
   Serial.println("Time to connect and send!");
-#ifdef GYRO_CODE
-#ifdef AF_LSM
-// This section of code turns on the 
-#ifdef PIN_LSM6DS3TR_C_POWER
-	pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
-    #if defined(TARGET_SEEED_XIAO_NRF52840_SENSE)
-    NRF_P1->PIN_CNF[8] = ((uint32_t)NRF_GPIO_PIN_DIR_OUTPUT << GPIO_PIN_CNF_DIR_Pos)
-                              | ((uint32_t)NRF_GPIO_PIN_INPUT_DISCONNECT << GPIO_PIN_CNF_INPUT_Pos)
-                              | ((uint32_t)NRF_GPIO_PIN_NOPULL << GPIO_PIN_CNF_PULL_Pos)
-                              | ((uint32_t)NRF_GPIO_PIN_H0H1 << GPIO_PIN_CNF_DRIVE_Pos)
-                              | ((uint32_t)NRF_GPIO_PIN_NOSENSE << GPIO_PIN_CNF_SENSE_Pos);
-    #endif
-	digitalWrite(PIN_LSM6DS3TR_C_POWER, HIGH);
-	delay(10);
-#endif
 
-  if (!lsm6ds33.begin_I2C(0x6a, &Wire1))
-#else
-  if (IMU_SUCCESS != lsm6ds33.begin())
-#endif
-  {
-    // if (!lsm6ds33.begin_SPI(LSM_CS)) {
-    // if (!lsm6ds33.begin_SPI(LSM_CS, LSM_SCK, LSM_MISO, LSM_MOSI)) {
-    Serial.println("Failed to find LSM6DS33 chip");
-    /*    while (1)
-        {
-          delay(10);
-        }*/
-      isGyro = false;
-  }
-  else
-  {
-    #ifdef AF_LSM
-    lsm6ds33.setAccelRange(LSM6DS_ACCEL_RANGE_16_G);
-    lsm6ds33.setAccelDataRate(LSM6DS_RATE_1_66K_HZ);
-
-    lsm6ds33.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS);
-    lsm6ds33.setGyroDataRate(LSM6DS_RATE_3_33K_HZ);
-    #else
-    lsm6ds33.settings.accelSampleRate = 13330;
-    #endif
-
-   Serial.println("Successfully found LSM6DS33 chip");
-   isGyro = true;
-  }
-#endif // GYRO_CODE
+  #ifdef GYRO_CODE
+  accel::Setup();
+  #endif // GYRO_CODE
 
   neoshow(Adafruit_NeoPixel::Color(0, 255, 0));
 
@@ -532,8 +486,11 @@ void setup()
 #ifdef GYRO_CODE
   if (isGyro) {
     pattern::switch_pattern(pgyroColor::Create());
-  }
+  } else
 #endif // GYRO_CODE
+  {
+    pattern::switch_pattern(pdart::Create());
+  }
   // pattern::switch_pattern(pcircles::Create());
   // TODO: Allow the user to choose a pattern to display at startup?
 }
@@ -668,6 +625,7 @@ void TimeLights()
       }
       ShowStrips();
       display_state_now = CHARGE_DISPLAY;
+      nextFrame = battMicros+10;
       return;
     } else {
       if (display_state_now == CHARGE_DISPLAY)
@@ -743,6 +701,13 @@ void TimeLights()
       nextFrame = microdelay + themicros;
       //  Serial.printf("TimeLights says set frame %d\n", nextFindex);
       // ASSUME: strip1 & strip0 have the same number of pixels.
+      if (bStabiliseThisFrame && isGyro) {
+        // Calculate nextFindex based on accelerometer reading.
+        int next = accel::segmentFromAccel(myFrameCount);
+        if (next >= 0) {
+          nextFindex = next;
+        }
+      }
       for (int i = 0; i < width * height; i++)
       {
         setOffsetPixel(i, currentFrame[nextFindex].color[i]);
@@ -968,6 +933,8 @@ command_loop:
     // X - Sparkle
     // A - chasing circles
     // D - 'squares'
+    // G - gyro testing
+    // Z - stabilise the following image - treat it as a set of segments making up the full disc.
     // Serial.printf("command_state_now is NONE_COMMAND, command is %d\n", blecmd);
     switch (blecmd)
     {
@@ -1093,6 +1060,10 @@ command_loop:
       break;
     case 'F':
       Serial.print("Command F\tFrame: ");
+      
+      bStabiliseThisFrame = bStabiliseNextFrame;
+      bStabiliseNextFrame = false;
+
       defaultFrames();
       command_state_now = FRAME_COMMAND;
       frameOffset = 0;
@@ -1242,6 +1213,10 @@ command_loop:
       // Gyro - currently, no parameters. Might feel like adding more later.
       pattern::switch_pattern(pgyroColor::Create());
       // gyroColor::start();
+      break;
+    case 'Z':
+      // Gyro - stabilise the next frame that comes in!
+      bStabiliseNextFrame = isGyro;
       break;
 #endif // GYRO_CODE
 
